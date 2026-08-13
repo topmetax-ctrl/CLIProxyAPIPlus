@@ -345,5 +345,14 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
-	c.File(filePath)
+	// Serve with the Cursor OAuth panel patch applied in memory: the on-disk
+	// asset stays byte-identical to the upstream release so the auto-updater's
+	// hash comparison keeps working.
+	data, err := managementasset.CursorPatchedManagementHTML(filePath)
+	if err != nil {
+		log.WithError(err).Error("failed to read management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+	c.Data(http.StatusOK, "text/html; charset=utf-8", data)
 }
