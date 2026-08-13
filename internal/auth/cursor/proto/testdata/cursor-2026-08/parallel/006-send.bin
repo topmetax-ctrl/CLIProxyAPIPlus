@@ -1,0 +1,49 @@
+ÂR¿
+¼
+¹:¸
+get_stock_price+Get current stock price for a ticker symbol`*^
+
+typeobject
+0
+
+properties"* 
+
+symbol*
+
+typestring
+
+required2
+
+symbol"proxy*get_stock_price:Ÿ*get_weather
+get_weatherGet current weather for a city\*Z
+
+typeobject
+.
+
+properties *
+
+city*
+
+typestring
+
+required
+2
+city"proxy:Ù"proxy*get_exchange_rate
+get_exchange_rate"Get FX rate between two currencies…*‚
+
+typeobject
+M
+
+properties?*=
+
+base*
+
+typestring
+
+quote*
+
+typestring
+
+required2
+base
+quote

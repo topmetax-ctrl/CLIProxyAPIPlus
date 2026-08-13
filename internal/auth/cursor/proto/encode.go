@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -658,7 +659,9 @@ func sha256Sum(data []byte) []byte {
 var idCounter uint64
 
 func generateId() string {
-	idCounter++
-	h := sha256.Sum256([]byte{byte(idCounter), byte(idCounter >> 8), byte(idCounter >> 16)})
+	// EncodeRunRequest runs concurrently across requests; the counter must be
+	// incremented atomically to avoid a data race on the shared global.
+	n := atomic.AddUint64(&idCounter, 1)
+	h := sha256.Sum256([]byte{byte(n), byte(n >> 8), byte(n >> 16)})
 	return hex.EncodeToString(h[:16])
 }

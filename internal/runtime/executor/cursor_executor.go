@@ -12,6 +12,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,8 +25,10 @@ import (
 	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -41,7 +46,32 @@ const (
 	cursorCheckpointTTL     = 30 * time.Minute
 	cursorStreamFlushDelay  = 16 * time.Millisecond
 	cursorStreamMaxBatch    = 512
+	// cursorToolBatchIdle is how long the frame processor keeps draining after
+	// the most recent MCP tool call before declaring the parallel tool-call
+	// burst complete. Wire captures show Cursor emits every parallel exec of a
+	// turn within ~150ms of each other (then goes quiet waiting for results),
+	// so this window must exceed the inter-call gap while adding minimal
+	// latency to tool turns.
+	cursorToolBatchIdle = 400 * time.Millisecond
 )
+
+// cursorNoProgressTimeout bounds how long the frame processor tolerates an
+// upstream that sends no content-bearing message (heartbeats do not count).
+// Wire observation 2026-08-13: under account-level load Cursor sometimes parks
+// a stream forever, emitting only ~10s keepalives (or going fully silent
+// mid-generation), which would otherwise hang agent clients indefinitely.
+// 240s stays clear of legitimate slow turns — even 1.5MB payloads produce
+// their first frame within seconds — while failing fast enough that clients
+// (Claude Code times out at ~300s) can retry. Variable so tests can shorten
+// it; CURSOR_NO_PROGRESS_TIMEOUT_S overrides it at startup.
+var cursorNoProgressTimeout = func() time.Duration {
+	if s := os.Getenv("CURSOR_NO_PROGRESS_TIMEOUT_S"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 240 * time.Second
+}()
 
 // CursorExecutor handles requests to the Cursor API via Connect+Protobuf protocol.
 type CursorExecutor struct {
@@ -82,7 +112,7 @@ type cursorFrameProcessor func(
 	blobStore map[string][]byte,
 	mcpTools []cursorproto.McpToolDef,
 	onText func(text string, isThinking bool),
-	onMcpExec func(exec pendingMcpExec),
+	onToolBatch func(execs []pendingMcpExec),
 	toolResultCh <-chan []toolResultInfo,
 	tokenUsage *cursorTokenUsage,
 	onCheckpoint func(data []byte),
@@ -306,10 +336,22 @@ func classifyCursorError(err error) error {
 			return cursorStatusErr{code: 403, msg: err.Error()}
 		case "unavailable":
 			return cursorStatusErr{code: 503, msg: err.Error()}
-		case "internal":
+		case "internal", "data_loss", "unknown":
 			return cursorStatusErr{code: 500, msg: err.Error()}
+		case "deadline_exceeded":
+			return cursorStatusErr{code: 504, msg: err.Error()}
+		case "not_found":
+			return cursorStatusErr{code: 404, msg: err.Error()}
+		case "unimplemented":
+			return cursorStatusErr{code: 501, msg: err.Error()}
+		case "invalid_argument", "failed_precondition", "out_of_range",
+			"already_exists", "aborted", "cancelled":
+			// Client-side faults (e.g. a dead/unknown model returns
+			// invalid_argument). These are the caller's request problem, not an
+			// upstream gateway failure, so they must not surface as 502.
+			return cursorStatusErr{code: 400, msg: err.Error()}
 		default:
-			// Unknown Connect code — log for observation, treat as 502
+			// Genuinely unknown Connect code — log for observation, treat as 502.
 			return cursorStatusErr{code: 502, msg: err.Error()}
 		}
 	}
@@ -401,7 +443,49 @@ func (e *CursorExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 }
 
 // Execute handles non-streaming requests.
-func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+// cursorAuthRetryDelay is the pause before the single in-place retry after a
+// transient upstream "unauthenticated" rejection. Wire observation 2026-08-13:
+// Cursor occasionally rejects a stream with unauthenticated even though the
+// same OAuth token succeeds on the very next request, so failing fast here
+// would incorrectly cool the whole account down for 30 minutes.
+const cursorAuthRetryDelay = 750 * time.Millisecond
+
+// isTransientCursorAuthErr reports whether err is an upstream unauthenticated
+// rejection that occurred before any response data was produced and is
+// therefore safe (and worthwhile) to retry once in place.
+func isTransientCursorAuthErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var statusErr interface{ StatusCode() int }
+	if !errors.As(err, &statusErr) || statusErr.StatusCode() != 401 {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "unauthenticated")
+}
+
+// Execute handles non-streaming requests, retrying once on a transient
+// upstream unauthenticated rejection before surfacing the error.
+func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	reporter := helps.NewExecutorUsageReporter(ctx, e, req.Model, auth)
+	resp, err := e.executeOnce(ctx, auth, req, opts, reporter)
+	if isTransientCursorAuthErr(err) && ctx.Err() == nil {
+		log.Warnf("cursor: transient unauthenticated from upstream (non-stream); retrying once after %s", cursorAuthRetryDelay)
+		select {
+		case <-time.After(cursorAuthRetryDelay):
+		case <-ctx.Done():
+			reporter.PublishFailure(ctx, err)
+			return resp, err
+		}
+		resp, err = e.executeOnce(ctx, auth, req, opts, reporter)
+	}
+	if err != nil {
+		reporter.PublishFailure(ctx, err)
+	}
+	return resp, err
+}
+
+func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, reporter *helps.UsageReporter) (resp cliproxyexecutor.Response, err error) {
 	log.Debugf("cursor Execute: model=%s sourceFormat=%s payloadLen=%d", req.Model, opts.SourceFormat, len(req.Payload))
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -456,10 +540,10 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	var toolCalls []pendingMcpExec
 	usage := &cursorTokenUsage{}
 	usage.setInputEstimate(len(payload))
-	var onMcpExec func(pendingMcpExec)
+	var onToolBatch func([]pendingMcpExec)
 	if openAICompatible {
-		onMcpExec = func(toolCall pendingMcpExec) {
-			toolCalls = append(toolCalls, toolCall)
+		onToolBatch = func(execs []pendingMcpExec) {
+			toolCalls = append(toolCalls, execs...)
 		}
 	}
 	if streamErr := e.processFrames(sessionCtx, stream, params.BlobStore, params.McpTools,
@@ -470,7 +554,7 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 				fullText.WriteString(text)
 			}
 		},
-		onMcpExec,
+		onToolBatch,
 		nil,
 		usage,
 		nil,
@@ -502,6 +586,11 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		message["tool_calls"] = serialized
 	}
 	inputTokens, outputTokens := usage.get()
+	reporter.Publish(ctx, coreusage.Detail{
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		TotalTokens:  inputTokens + outputTokens,
+	})
 	body := map[string]any{
 		"id":      "chatcmpl-" + uuid.New().String()[:28],
 		"object":  "chat.completion",
@@ -534,10 +623,48 @@ func isOpenAICompatibleSourceFormat(format sdktranslator.Format) bool {
 	return format.String() == "" || format.String() == "openai"
 }
 
+// dumpCursorPayload writes the translated OpenAI payload to the directory in
+// CURSOR_DUMP_PAYLOADS for offline replay/diffing. Debug aid; no-op when the
+// env var is unset.
+func dumpCursorPayload(payload []byte) {
+	dir := os.Getenv("CURSOR_DUMP_PAYLOADS")
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	name := fmt.Sprintf("%s-%06d.json", time.Now().Format("150405"), time.Now().Nanosecond()/1000)
+	_ = os.WriteFile(filepath.Join(dir, name), payload, 0o644)
+}
+
 // ExecuteStream handles streaming requests. Native Claude requests can resume
 // a parked MCP/H2 session; OpenAI-compatible tool results use a fresh request
 // rebuilt from the complete client transcript.
-func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+//
+// A transient upstream unauthenticated rejection is retried once in place:
+// executeStreamOnce only returns an error when the stream failed before any
+// chunk was emitted, so the retry can never duplicate client-visible output.
+func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	reporter := helps.NewExecutorUsageReporter(ctx, e, req.Model, auth)
+	result, err := e.executeStreamOnce(ctx, auth, req, opts, reporter)
+	if isTransientCursorAuthErr(err) && ctx.Err() == nil {
+		log.Warnf("cursor: transient unauthenticated from upstream (stream); retrying once after %s", cursorAuthRetryDelay)
+		select {
+		case <-time.After(cursorAuthRetryDelay):
+		case <-ctx.Done():
+			reporter.PublishFailure(ctx, err)
+			return result, err
+		}
+		result, err = e.executeStreamOnce(ctx, auth, req, opts, reporter)
+	}
+	if err != nil {
+		reporter.PublishFailure(ctx, err)
+	}
+	return result, err
+}
+
+func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, reporter *helps.UsageReporter) (_ *cliproxyexecutor.StreamResult, err error) {
 	log.Debugf("cursor ExecuteStream: model=%s sourceFormat=%s payloadLen=%d", req.Model, opts.SourceFormat, len(req.Payload))
 	defer func() {
 		if r := recover(); r != nil {
@@ -576,6 +703,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	parsed := parseOpenAIRequest(payload)
 	log.Debugf("cursor: parsed request: model=%s userText=%d chars, turns=%d, tools=%d, toolResults=%d",
 		parsed.Model, len(parsed.UserText), len(parsed.Turns), len(parsed.Tools), len(parsed.ToolResults))
+	dumpCursorPayload(payload)
 
 	conversationId := deriveConversationId(apiKeyFromContext(ctx), sessionID, parsed.SystemPrompt)
 	authID := auth.ID // e.g. "cursor.json" or "cursor-account2.json"
@@ -617,7 +745,13 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 		if hasSession && session.stream != nil && session.authID == authID {
 			log.Debugf("cursor: resuming session %s with %d tool results", sessionKey, len(parsed.ToolResults))
-			return e.resumeWithToolResults(ctx, sessionKey, session, parsed, from, to, req, originalPayload, payload, needsTranslate)
+			result, errResume := e.resumeWithToolResults(ctx, sessionKey, session, parsed, from, to, req, originalPayload, payload, needsTranslate)
+			if errResume == nil {
+				// The parked worker goroutine owns the token totals for this
+				// conversation; count the resume request itself here.
+				reporter.EnsurePublished(ctx)
+			}
+			return result, errResume
 		}
 		if hasSession && session.authID != authID {
 			log.Warnf("cursor: session %s belongs to auth %s, but request is from %s — skipping resume", sessionKey, session.authID, authID)
@@ -814,6 +948,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		_ = resumeOutCh
 		thinkingActive := false
 		toolCallIndex := 0
+		openAIToolCallsEmitted := false
 		usage := &cursorTokenUsage{}
 		usage.setInputEstimate(len(payload))
 
@@ -843,35 +978,47 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 		streamErr := e.processFrames(sessionCtx, stream, params.BlobStore, params.McpTools,
 			streamCoalescer.push,
-			func(exec pendingMcpExec) {
+			func(execs []pendingMcpExec) {
+				if len(execs) == 0 {
+					return
+				}
 				// Preserve ordering: all assistant text must reach the client
-				// before the tool-call boundary is emitted.
+				// before the tool-call boundary is emitted. Every parallel tool
+				// call in the turn is emitted as its own delta with a distinct,
+				// monotonically increasing index (OpenAI/Anthropic requirement).
 				streamCoalescer.flush()
 				thinkingActive = false
-				toolCallJSON := fmt.Sprintf(`{"tool_calls":[{"index":%d,"id":%s,"type":"function","function":{"name":%s,"arguments":%s}}]}`,
-					toolCallIndex, jsonString(exec.ToolCallId), jsonString(exec.ToolName), jsonString(exec.Args))
-				toolCallIndex++
-				sendChunkSwitchable(toolCallJSON, "")
-				sendChunkSwitchable(`{}`, `"tool_calls"`)
-				sendDoneSwitchable()
+				for _, exec := range execs {
+					toolCallJSON := fmt.Sprintf(`{"tool_calls":[{"index":%d,"id":%s,"type":"function","function":{"name":%s,"arguments":%s}}]}`,
+						toolCallIndex, jsonString(exec.ToolCallId), jsonString(exec.ToolName), jsonString(exec.Args))
+					toolCallIndex++
+					sendChunkSwitchable(toolCallJSON, "")
+				}
 
 				if openAICompatible {
-					closeCurrentOutput()
-					log.Debugf("cursor: ended H2 stream after MCP tool call (tool=%s)", exec.ToolName)
+					// The turn is complete for this stateless request: the client
+					// will resend the full transcript (with tool results) as a new
+					// request. The tool_calls finish boundary is emitted after
+					// processFrames returns so a late frame cannot race it.
+					openAIToolCallsEmitted = true
+					log.Debugf("cursor: emitted %d parallel tool call(s), ending OpenAI H2 stream", len(execs))
 					return
 				}
 
-				// Publish the resumable session before closing the current output.
-				// Channel closure lets the client submit its tool result immediately;
-				// that request must never observe an empty session map and cold-start.
+				// Native Claude path keeps the H2 stream parked so all N tool
+				// results can be injected on the same stream. Emit the tool_calls
+				// boundary, publish the resumable session carrying every pending
+				// exec, then close the current output.
+				sendChunkSwitchable(`{}`, `"tool_calls"`)
+				sendDoneSwitchable()
 				resumeOut := make(chan cliproxyexecutor.StreamChunk, 64)
-				log.Debugf("cursor: saving session %s for MCP tool resume (tool=%s)", sessionKey, exec.ToolName)
+				log.Debugf("cursor: saving session %s for MCP tool resume (%d pending call(s))", sessionKey, len(execs))
 				outMu.Lock()
 				session := &cursorSession{
 					stream:       stream,
 					blobStore:    params.BlobStore,
 					mcpTools:     params.McpTools,
-					pending:      []pendingMcpExec{exec},
+					pending:      append([]pendingMcpExec(nil), execs...),
 					cancel:       sessionCancel,
 					createdAt:    time.Now(),
 					authID:       authID,
@@ -931,6 +1078,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			if outputStarted.Load() {
 				// Partial output must never be presented as a successful stop.
 				log.Warnf("cursor: stream error after data sent (auth=%s conv=%s): %v", authID, conversationId, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
 				emitToOut(cliproxyexecutor.StreamChunk{Err: classifyCursorError(fmt.Errorf("cursor: stream interrupted after partial response: %w", streamErr))})
 				closeCurrentOutput()
 				sessionCancel()
@@ -946,8 +1094,31 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 		}
 
+		// OpenAI-compatible parallel tool calls: the batch was emitted as deltas
+		// during processing; close the turn with a single tool_calls boundary
+		// now that the frame processor has drained the whole burst.
+		if openAICompatible && openAIToolCallsEmitted {
+			sendChunkSwitchable(`{}`, `"tool_calls"`)
+			sendDoneSwitchable()
+			inTok, outTok := usage.get()
+			reporter.Publish(ctx, coreusage.Detail{
+				InputTokens:  inTok,
+				OutputTokens: outTok,
+				TotalTokens:  inTok + outTok,
+			})
+			closeCurrentOutput()
+			sessionCancel()
+			stream.Close()
+			return
+		}
+
 		// Include token usage in the final stop chunk
 		inputTok, outputTok := usage.get()
+		reporter.Publish(ctx, coreusage.Detail{
+			InputTokens:  inputTok,
+			OutputTokens: outputTok,
+			TotalTokens:  inputTok + outputTok,
+		})
 		stopDelta := fmt.Sprintf(`{},"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}`,
 			inputTok, outputTok, inputTok+outputTok)
 		// Build the stop chunk with usage embedded in the choices array level
@@ -1292,7 +1463,7 @@ func processH2SessionFrames(
 	blobStore map[string][]byte,
 	mcpTools []cursorproto.McpToolDef,
 	onText func(text string, isThinking bool),
-	onMcpExec func(exec pendingMcpExec),
+	onToolBatch func(execs []pendingMcpExec),
 	toolResultCh <-chan []toolResultInfo, // nil for no tool result injection; non-nil to wait for results
 	tokenUsage *cursorTokenUsage, // tracks accumulated token usage (may be nil)
 	onCheckpoint func(data []byte), // called when server sends conversation_checkpoint_update
@@ -1300,14 +1471,179 @@ func processH2SessionFrames(
 	var buf bytes.Buffer
 	rejectReason := "Tool not available in this environment. Use the MCP tools provided instead."
 	log.Debugf("cursor: processH2SessionFrames started for streamID=%s, waiting for data...", stream.ID())
+
+	// Stall watchdog: fires when the upstream produces no content-bearing
+	// message for cursorNoProgressTimeout. Heartbeats deliberately do not feed
+	// it — a stalled stream keeps emitting keepalives forever. It is paused
+	// while the session is parked waiting for the client's tool results (that
+	// silence is legitimate and unbounded) and re-armed once results are sent.
+	progressTimer := time.NewTimer(cursorNoProgressTimeout)
+	defer progressTimer.Stop()
+	resetProgressTimer := func() {
+		if !progressTimer.Stop() {
+			select {
+			case <-progressTimer.C:
+			default:
+			}
+		}
+		progressTimer.Reset(cursorNoProgressTimeout)
+	}
+
+	// A single assistant turn may contain multiple parallel MCP tool calls.
+	// The server emits them back-to-back and then goes quiet awaiting results,
+	// so we accumulate every mcpArgs into toolBatch and only finalize the batch
+	// once no further call has arrived within cursorToolBatchIdle (or the turn
+	// otherwise ends). Finalizing too eagerly would collapse parallel calls to
+	// one — the exact bug this replaces.
+	var toolBatch []pendingMcpExec
+	var batchTimer *time.Timer
+	var batchTimerC <-chan time.Time
+	armBatchTimer := func() {
+		if batchTimer == nil {
+			batchTimer = time.NewTimer(cursorToolBatchIdle)
+		} else {
+			if !batchTimer.Stop() {
+				select {
+				case <-batchTimer.C:
+				default:
+				}
+			}
+			batchTimer.Reset(cursorToolBatchIdle)
+		}
+		batchTimerC = batchTimer.C
+	}
+	stopBatchTimer := func() {
+		if batchTimer != nil && !batchTimer.Stop() {
+			select {
+			case <-batchTimer.C:
+			default:
+			}
+		}
+		batchTimerC = nil
+	}
+
+	// finalizeToolBatch surfaces the collected tool-call burst. It returns
+	// done=true when the frame processor should stop reading (OpenAI stateless
+	// path: the client resends the transcript with results as a new request).
+	// On the native path it parks the stream, waits for all N results, sends
+	// every McpResult, and returns done=false so continuation frames keep
+	// flowing on the same stream.
+	finalizeToolBatch := func() (bool, error) {
+		if len(toolBatch) == 0 {
+			return false, nil
+		}
+		batch := toolBatch
+		toolBatch = nil
+		stopBatchTimer()
+		if onToolBatch != nil {
+			onToolBatch(batch)
+		}
+		if toolResultCh == nil {
+			return true, nil
+		}
+
+		log.Debugf("cursor: waiting for %d tool result(s) on channel (inline mode)...", len(batch))
+		var toolResults []toolResultInfo
+	waitLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case results, ok := <-toolResultCh:
+				if !ok {
+					return true, nil
+				}
+				toolResults = results
+				break waitLoop
+			case waitData, ok := <-stream.Data():
+				if !ok {
+					return false, stream.Err()
+				}
+				buf.Write(waitData)
+				for {
+					cb := buf.Bytes()
+					if len(cb) == 0 {
+						break
+					}
+					wf, wp, wc, wok := cursorproto.ParseConnectFrame(cb)
+					if !wok {
+						break
+					}
+					buf.Next(wc)
+					if wf&cursorproto.ConnectEndStreamFlag != 0 {
+						continue
+					}
+					wmsg, werr := cursorproto.DecodeAgentServerMessage(wp)
+					if werr != nil {
+						continue
+					}
+					switch wmsg.Type {
+					case cursorproto.ServerMsgKvGetBlob:
+						blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
+						d := blobStore[blobKey]
+						stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvGetBlobResult(wmsg.KvId, d), 0))
+					case cursorproto.ServerMsgKvSetBlob:
+						blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
+						blobStore[blobKey] = append([]byte(nil), wmsg.BlobData...)
+						stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvSetBlobResult(wmsg.KvId), 0))
+					case cursorproto.ServerMsgExecRequestCtx:
+						stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecRequestContextResult(wmsg.ExecMsgId, wmsg.ExecId, mcpTools), 0))
+					case cursorproto.ServerMsgCheckpoint:
+						if onCheckpoint != nil && len(wmsg.CheckpointData) > 0 {
+							onCheckpoint(wmsg.CheckpointData)
+						}
+					}
+				}
+			case <-stream.Done():
+				return false, stream.Err()
+			}
+		}
+
+		// Send an MCP result for every pending call in the batch. Results are
+		// matched to their originating call by tool_call_id.
+		for _, pending := range batch {
+			for _, tr := range toolResults {
+				if tr.ToolCallId == pending.ToolCallId {
+					log.Debugf("cursor: sending inline MCP result for tool=%s", pending.ToolName)
+					resultBytes := cursorproto.EncodeExecMcpResult(pending.ExecMsgId, pending.ExecId, tr.Content, false)
+					stream.Write(cursorproto.FrameConnectMessage(resultBytes, 0))
+					break
+				}
+			}
+		}
+		return false, nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			log.Debugf("cursor: processH2SessionFrames exiting: context done")
 			return ctx.Err()
+		case <-batchTimerC:
+			batchTimerC = nil
+			done, err := finalizeToolBatch()
+			if err != nil {
+				return err
+			}
+			if done {
+				return nil
+			}
+			// The parked tool-result wait inside finalizeToolBatch is unbounded
+			// by design; give the model a fresh window now that results are in.
+			resetProgressTimer()
+		case <-progressTimer.C:
+			log.Warnf("cursor: processH2SessionFrames[%s]: no upstream progress within %s (heartbeats only) — failing stalled stream", stream.ID(), cursorNoProgressTimeout)
+			return cursorStatusErr{code: 504, msg: fmt.Sprintf("cursor: upstream stalled: no progress within %s", cursorNoProgressTimeout)}
 		case data, ok := <-stream.Data():
 			if !ok {
 				log.Debugf("cursor: processH2SessionFrames[%s]: exiting: stream data channel closed", stream.ID())
+				// Flush any collected OpenAI tool batch before ending so a
+				// stream that closes right after the burst still surfaces calls.
+				if len(toolBatch) > 0 && toolResultCh == nil && onToolBatch != nil {
+					stopBatchTimer()
+					onToolBatch(toolBatch)
+					toolBatch = nil
+				}
 				return stream.Err() // may be RST_STREAM, GOAWAY, or nil for clean close
 			}
 			// Log first 20 bytes of raw data for debugging
@@ -1347,6 +1683,9 @@ func processH2SessionFrames(
 				}
 
 				log.Debugf("cursor: decoded server message type=%d", msg.Type)
+				if msg.Type != cursorproto.ServerMsgHeartbeat {
+					resetProgressTimer()
+				}
 				switch msg.Type {
 				case cursorproto.ServerMsgTextDelta:
 					if msg.Text != "" && onText != nil {
@@ -1361,6 +1700,13 @@ func processH2SessionFrames(
 
 				case cursorproto.ServerMsgTurnEnded:
 					log.Debugf("cursor: TurnEnded received, stream will finish")
+					// Defensive: if a tool burst was still buffered when the turn
+					// ended (OpenAI path), surface it before completing.
+					if len(toolBatch) > 0 && toolResultCh == nil && onToolBatch != nil {
+						stopBatchTimer()
+						onToolBatch(toolBatch)
+						toolBatch = nil
+					}
 					return nil // clean completion
 
 				case cursorproto.ServerMsgHeartbeat:
@@ -1396,96 +1742,23 @@ func processH2SessionFrames(
 					stream.Write(cursorproto.FrameConnectMessage(resp, 0))
 
 				case cursorproto.ServerMsgExecMcpArgs:
-					if onMcpExec != nil {
-						decodedArgs := decodeMcpArgsToJSON(msg.McpArgs)
-						toolCallId := normalizeToolCallID(msg.McpToolCallId)
-						if toolCallId == "" {
-							toolCallId = uuid.New().String()
-						}
-						log.Debugf("cursor: received mcpArgs from server: execMsgId=%d execId=%q toolName=%s toolCallId=%s",
-							msg.ExecMsgId, msg.ExecId, msg.McpToolName, toolCallId)
-						pending := pendingMcpExec{
-							ExecMsgId:  msg.ExecMsgId,
-							ExecId:     msg.ExecId,
-							ToolCallId: toolCallId,
-							ToolName:   msg.McpToolName,
-							Args:       decodedArgs,
-						}
-						onMcpExec(pending)
-
-						if toolResultCh == nil {
-							return nil
-						}
-
-						// Inline mode: wait for tool result while handling KV/heartbeat
-						log.Debugf("cursor: waiting for tool result on channel (inline mode)...")
-						var toolResults []toolResultInfo
-					waitLoop:
-						for {
-							select {
-							case <-ctx.Done():
-								return ctx.Err()
-							case results, ok := <-toolResultCh:
-								if !ok {
-									return nil
-								}
-								toolResults = results
-								break waitLoop
-							case waitData, ok := <-stream.Data():
-								if !ok {
-									return stream.Err()
-								}
-								buf.Write(waitData)
-								for {
-									cb := buf.Bytes()
-									if len(cb) == 0 {
-										break
-									}
-									wf, wp, wc, wok := cursorproto.ParseConnectFrame(cb)
-									if !wok {
-										break
-									}
-									buf.Next(wc)
-									if wf&cursorproto.ConnectEndStreamFlag != 0 {
-										continue
-									}
-									wmsg, werr := cursorproto.DecodeAgentServerMessage(wp)
-									if werr != nil {
-										continue
-									}
-									switch wmsg.Type {
-									case cursorproto.ServerMsgKvGetBlob:
-										blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
-										d := blobStore[blobKey]
-										stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvGetBlobResult(wmsg.KvId, d), 0))
-									case cursorproto.ServerMsgKvSetBlob:
-										blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
-										blobStore[blobKey] = append([]byte(nil), wmsg.BlobData...)
-										stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvSetBlobResult(wmsg.KvId), 0))
-									case cursorproto.ServerMsgExecRequestCtx:
-										stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecRequestContextResult(wmsg.ExecMsgId, wmsg.ExecId, mcpTools), 0))
-									case cursorproto.ServerMsgCheckpoint:
-										if onCheckpoint != nil && len(wmsg.CheckpointData) > 0 {
-											onCheckpoint(wmsg.CheckpointData)
-										}
-									}
-								}
-							case <-stream.Done():
-								return stream.Err()
-							}
-						}
-
-						// Send MCP result
-						for _, tr := range toolResults {
-							if tr.ToolCallId == pending.ToolCallId {
-								log.Debugf("cursor: sending inline MCP result for tool=%s", pending.ToolName)
-								resultBytes := cursorproto.EncodeExecMcpResult(pending.ExecMsgId, pending.ExecId, tr.Content, false)
-								stream.Write(cursorproto.FrameConnectMessage(resultBytes, 0))
-								break
-							}
-						}
-						continue
+					decodedArgs := decodeMcpArgsToJSON(msg.McpArgs)
+					toolCallId := normalizeToolCallID(msg.McpToolCallId)
+					if toolCallId == "" {
+						toolCallId = uuid.New().String()
 					}
+					log.Debugf("cursor: received mcpArgs from server: execMsgId=%d execId=%q toolName=%s toolCallId=%s (batch=%d)",
+						msg.ExecMsgId, msg.ExecId, msg.McpToolName, toolCallId, len(toolBatch)+1)
+					toolBatch = append(toolBatch, pendingMcpExec{
+						ExecMsgId:  msg.ExecMsgId,
+						ExecId:     msg.ExecId,
+						ToolCallId: toolCallId,
+						ToolName:   msg.McpToolName,
+						Args:       decodedArgs,
+					})
+					// Keep draining: more parallel calls in this turn may follow.
+					// The batch idle timer (or turn end / stream close) finalizes.
+					armBatchTimer()
 
 				case cursorproto.ServerMsgExecReadArgs:
 					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecReadRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
@@ -1529,6 +1802,11 @@ type parsedOpenAIRequest struct {
 	Images       []cursorproto.ImageData
 	Turns        []cursorproto.TurnData
 	ToolResults  []toolResultInfo
+	// ToolChoice is normalized to "", "auto", "none", "required", or
+	// "tool:NAME" for a specific forced function.
+	ToolChoice string
+	// ParallelToolCalls mirrors the OpenAI request field when present.
+	ParallelToolCalls *bool
 }
 
 type toolResultInfo struct {
@@ -1610,8 +1888,39 @@ func parseOpenAIRequest(payload []byte) *parsedOpenAIRequest {
 
 	// Extract tools
 	p.Tools = gjson.GetBytes(payload, "tools").Array()
+	p.ToolChoice = parseToolChoice(payload)
+	if pv := gjson.GetBytes(payload, "parallel_tool_calls"); pv.Exists() {
+		b := pv.Bool()
+		p.ParallelToolCalls = &b
+	}
 
 	return p
+}
+
+// parseToolChoice normalizes the OpenAI tool_choice field. It accepts the
+// string forms ("auto"/"none"/"required") and the object form
+// {"type":"function","function":{"name":"X"}} (normalized to "tool:X").
+// Unknown shapes return "" (treated as auto).
+func parseToolChoice(payload []byte) string {
+	tc := gjson.GetBytes(payload, "tool_choice")
+	if !tc.Exists() {
+		return ""
+	}
+	if tc.Type == gjson.String {
+		switch tc.String() {
+		case "none", "required", "auto":
+			return tc.String()
+		}
+		return ""
+	}
+	name := tc.Get("function.name").String()
+	if name == "" {
+		name = tc.Get("name").String()
+	}
+	if name != "" {
+		return "tool:" + name
+	}
+	return ""
 }
 
 // bakeToolResultsIntoTurns merges tool results into the last turn's assistant text
@@ -1767,7 +2076,55 @@ func buildRunRequestParams(parsed *parsedOpenAIRequest, conversationId, upstream
 		})
 	}
 
+	applyToolChoice(params, parsed)
+
 	return params
+}
+
+// applyToolChoice maps OpenAI tool_choice / parallel_tool_calls onto the Cursor
+// request. The Cursor AgentRunRequest has no field for either, so only the
+// tool-visibility decisions are enforced at the protocol level:
+//
+//   - "none": no tools are advertised, so the model cannot call any.
+//   - "tool:NAME": only the named tool is advertised.
+//
+// The remaining intents ("required", forcing a specific call, and disabling
+// parallelism) cannot be guaranteed by the protocol and are expressed as
+// natural-language directives appended to the system prompt. This is best
+// effort — the same limitation every Cursor bridge shares — but it is honored
+// far more often than silence.
+func applyToolChoice(params *cursorproto.RunRequestParams, parsed *parsedOpenAIRequest) {
+	var hints []string
+
+	switch {
+	case parsed.ToolChoice == "none":
+		params.McpTools = nil
+	case strings.HasPrefix(parsed.ToolChoice, "tool:"):
+		name := strings.TrimPrefix(parsed.ToolChoice, "tool:")
+		filtered := params.McpTools[:0]
+		for _, tool := range params.McpTools {
+			if tool.Name == name {
+				filtered = append(filtered, tool)
+			}
+		}
+		params.McpTools = filtered
+		hints = append(hints, fmt.Sprintf("You must call the tool named %q to fulfill this request. Do not respond without calling it.", name))
+	case parsed.ToolChoice == "required":
+		if len(params.McpTools) > 0 {
+			hints = append(hints, "You must call at least one of the provided tools to fulfill this request; do not answer without calling a tool.")
+		}
+	}
+
+	if parsed.ParallelToolCalls != nil && !*parsed.ParallelToolCalls && len(params.McpTools) > 0 {
+		hints = append(hints, "Call at most one tool per turn. Never issue multiple tool calls in parallel; wait for each result before the next call.")
+	}
+
+	if len(hints) > 0 {
+		if params.SystemPrompt != "" {
+			params.SystemPrompt += "\n\n"
+		}
+		params.SystemPrompt += strings.Join(hints, "\n")
+	}
 }
 
 // --- Helpers ---

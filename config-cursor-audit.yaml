@@ -1,0 +1,16 @@
+host: '0.0.0.0'
+port: 8317
+auth-dir: '~/.cli-proxy-api'
+remote-management:
+  allow-remote: false
+  secret-key: '$2a$10$WTTTGcZAIz9t0ZyX4yyiUOvsPk9FAqxNig.X78VLpB4c1pYZquMvW'
+  disable-auto-update-panel: true
+api-keys:
+  - 'audit-local-key-1'
+# Single-account setup: a watchdog 504 or transient upstream failure must not
+# park the only credential for the default 60s.
+transient-error-cooldown-seconds: 15
+# request-log: bật tạm khi cần bắt payload để debug (ghi toàn bộ body vào auth-dir/logs)
+request-log: false
+debug: true
+usage-statistics-enabled: true

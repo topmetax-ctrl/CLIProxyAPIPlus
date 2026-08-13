@@ -1,0 +1,57 @@
+
+è	*$0f1eec84-0012-4d14-9527-ab3012dea2b3"π
+∏*get_stock_price
+get_stock_price+Get current stock price for a ticker symbol`*^
+0
+
+properties"* 
+
+symbol*
+
+typestring
+
+required2
+
+symbol
+
+typeobject"proxy
+ü*get_weather
+get_weatherGet current weather for a city\*Z
+
+typeobject
+.
+
+properties *
+
+city*
+
+typestring
+
+required
+2
+city"proxy
+Ÿ"Get FX rate between two currenciesÖ*Ç
+
+typeobject
+M
+
+properties?*=
+
+base*
+
+typestring
+
+quote*
+
+typestring
+
+required2
+base
+quote"proxy*get_exchange_rate
+get_exchange_rate
+"
+ @0ﬂ#'÷Ù›Â^k):t5pgeÛ‹c≈ÁÁW_FS⁄
+◊
+‘
+´You have three independent tools. In your FIRST response you MUST call all three tools simultaneously (in parallel, in the same turn, before receiving any result): 1) get_stock_price with symbol=AAPL, 2) get_weather with city=Tokyo, 3) get_exchange_rate with base=USD quote=EUR. Do not call them one at a time. Issue all three tool calls at once, then wait. After all three results arrive, summarize them in one short sentence.$b67daf67-1c48-4959-865b-17538cc2c096*
+composer-2.5composer-2.5"composer-2.5

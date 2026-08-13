@@ -1,0 +1,32 @@
+{
+  "mcp_args_count": 3,
+  "model": "composer-2.5",
+  "pending": [
+    {
+      "ExecMsgId": 1,
+      "ExecId": "4105946b-e9ca-46dc-9074-8a389337dc51",
+      "ToolCallId": "tool_c0c372b5-1f9a-4048-b8fb-91c34be10c0",
+      "ToolName": "get_stock_price",
+      "ArgsJSON": "{\"symbol\":\"AAPL\"}",
+      "AtMs": 3108
+    },
+    {
+      "ExecMsgId": 2,
+      "ExecId": "9ef92905-aa69-46a3-8e73-3f729208b919",
+      "ToolCallId": "tool_9308ba55-f865-4513-8719-f9f816b1771",
+      "ToolName": "get_weather",
+      "ArgsJSON": "{\"city\":\"Tokyo\"}",
+      "AtMs": 3192
+    },
+    {
+      "ExecMsgId": 3,
+      "ExecId": "b9c3954a-6a75-4250-a08b-bebf431e35d3",
+      "ToolCallId": "tool_6d632988-acdb-4be6-b320-141b76c0842",
+      "ToolName": "get_exchange_rate",
+      "ArgsJSON": "{\"base\":\"USD\",\"quote\":\"EUR\"}",
+      "AtMs": 3249
+    }
+  ],
+  "reason": "turn ended after results",
+  "results_sent": true
+}
