@@ -1,6 +1,7 @@
 package managementasset
 
 import (
+	_ "embed"
 	"os"
 	"strings"
 	"sync"
@@ -14,8 +15,13 @@ import (
 // provider, and the on-disk copy is replaced wholesale by the auto-updater.
 // Editing the downloaded file directly therefore does not survive updates and
 // breaks the updater's local-vs-remote hash comparison. Instead the Cursor
-// OAuth login tile and its i18n strings are injected in memory at serve time,
-// keeping the artifact on disk pristine.
+// OAuth login tile, its i18n strings, and the API-key import overlay are
+// injected in memory at serve time, keeping the artifact on disk pristine.
+
+//go:embed cursor_overlay.js
+var cursorOverlayJS string
+
+const cursorOverlayMarker = "CURSOR-OVERLAY-V1"
 
 const cursorPatchMarker = "cursor_oauth_title"
 
@@ -48,12 +54,17 @@ var cursorPanelI18n = []struct{ anchor, insert string }{
 
 const cursorPanelI18nEnglish = "cursor_oauth_title:`Cursor OAuth`,cursor_oauth_button:`Start Cursor Login`,cursor_oauth_hint:`Login to Cursor service through OAuth flow, automatically obtain and save authentication files.`,cursor_oauth_url_label:`Authorization link:`,cursor_open_link:`Open Link`,cursor_copy_link:`Copy Link`,cursor_oauth_status_waiting:`Waiting for authentication...`,cursor_oauth_status_success:`Authentication successful!`,cursor_oauth_status_error:`Authentication failed:`,cursor_oauth_start_error:`Failed to start Cursor OAuth:`,cursor_oauth_polling_error:`Failed to check authentication status:`,"
 
-// ApplyCursorPanelPatch injects the Cursor OAuth tile and i18n strings into a
-// management panel asset. It is idempotent: content that already contains the
-// Cursor strings is returned unchanged. When the upstream panel changes enough
-// that an anchor no longer matches, the corresponding piece is skipped with a
-// warning instead of corrupting the asset.
+// ApplyCursorPanelPatch injects the Cursor OAuth tile, i18n strings, and the
+// API-key import overlay into a management panel asset. It is idempotent:
+// content that already contains a piece is left as-is for that piece. When the
+// upstream panel changes enough that an anchor no longer matches, the
+// corresponding piece is skipped with a warning instead of corrupting the asset.
 func ApplyCursorPanelPatch(content string) string {
+	content = applyCursorOAuthTile(content)
+	return applyCursorAPIKeyOverlay(content)
+}
+
+func applyCursorOAuthTile(content string) string {
 	if strings.Contains(content, cursorPatchMarker) {
 		return content
 	}
@@ -89,9 +100,30 @@ func ApplyCursorPanelPatch(content string) string {
 		return content
 	}
 	insertAt := idx + end
-	content = content[:insertAt] + cursorPanelTile + content[insertAt:]
+	return content[:insertAt] + cursorPanelTile + content[insertAt:]
+}
 
-	return content
+func applyCursorAPIKeyOverlay(content string) string {
+	if strings.Contains(content, cursorOverlayMarker) {
+		return content
+	}
+	if !strings.Contains(content, `id="root"`) && !strings.Contains(content, `id='root'`) {
+		return content
+	}
+	if strings.Contains(strings.ToLower(cursorOverlayJS), "</script") {
+		log.Warn("cursor panel patch: overlay script contains a closing script tag; refusing to inject")
+		return content
+	}
+	idx := strings.LastIndex(content, "</body>")
+	if idx < 0 {
+		idx = strings.LastIndex(content, "</BODY>")
+	}
+	if idx < 0 {
+		log.Warn("cursor panel patch: </body> not found; API-key import overlay not injected")
+		return content
+	}
+	snippet := "\n  <script id=\"cursor-overlay\">\n" + cursorOverlayJS + "\n  </script>\n"
+	return content[:idx] + snippet + content[idx:]
 }
 
 var cursorPatchedCache struct {
@@ -103,9 +135,10 @@ var cursorPatchedCache struct {
 }
 
 // CursorPatchedManagementHTML reads the management panel asset from disk and
-// returns it with the Cursor OAuth patch applied. Patched output is cached and
-// invalidated by file modification time and size, so the (auto-updated) asset
-// is re-patched transparently after a new panel release is downloaded.
+// returns it with the Cursor OAuth tile and API-key import overlay applied.
+// Patched output is cached and invalidated by file modification time and size,
+// so the (auto-updated) asset is re-patched transparently after a new panel
+// release is downloaded.
 func CursorPatchedManagementHTML(path string) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {

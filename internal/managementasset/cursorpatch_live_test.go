@@ -25,5 +25,8 @@ func TestApplyCursorPanelPatchAgainstRealArtifact(t *testing.T) {
 	if !strings.Contains(patched, "id:`cursor`,titleKey:`auth_login.cursor_oauth_title`") {
 		t.Fatalf("tile not injected in real asset")
 	}
+	if !strings.Contains(patched, cursorOverlayMarker) {
+		t.Fatalf("API-key overlay not injected in real asset")
+	}
 	t.Logf("real asset patched: %d -> %d bytes", len(raw), len(patched))
 }

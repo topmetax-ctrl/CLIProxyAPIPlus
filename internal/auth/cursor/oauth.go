@@ -134,6 +134,15 @@ func PollForAuth(ctx context.Context, uuid, verifier string) (*TokenPair, error)
 		float64(pollMaxAttempts)*pollMaxDelay.Seconds()/2)
 }
 
+// ExchangeAPIKey exchanges a Cursor user API key (e.g. "crsr_...") for an
+// access/refresh token pair. Cursor's exchange endpoint accepts the API key as
+// the bearer credential, so importing an account by API key reuses the same
+// call as token refresh: the returned pair is then persisted like any other
+// Cursor credential and refreshed through the normal Refresh path afterwards.
+func ExchangeAPIKey(ctx context.Context, apiKey string) (*TokenPair, error) {
+	return RefreshToken(ctx, apiKey)
+}
+
 // RefreshToken refreshes a Cursor access token using the refresh token.
 func RefreshToken(ctx context.Context, refreshToken string) (*TokenPair, error) {
 	client := &http.Client{Timeout: 10 * time.Second}

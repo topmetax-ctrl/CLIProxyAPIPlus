@@ -122,6 +122,85 @@ func (h *Handler) RequestCursorToken(c *gin.Context) {
 		"state":  state,
 	})
 }
+
+// ImportCursorAPIKey imports a Cursor account from a user API key (crsr_...).
+// Unlike the OAuth PKCE flow this is synchronous: the API key is exchanged for a
+// token pair, and the resulting credential is saved immediately. Supports
+// multiple accounts via the optional "label" field.
+func (h *Handler) ImportCursorAPIKey(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	var body struct {
+		APIKey string `json:"api_key"`
+		Label  string `json:"label"`
+	}
+	_ = c.ShouldBindJSON(&body)
+
+	apiKey := strings.TrimSpace(body.APIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(c.Query("api_key"))
+	}
+	label := strings.TrimSpace(body.Label)
+	if label == "" {
+		label = strings.TrimSpace(c.Query("label"))
+	}
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "api_key is required"})
+		return
+	}
+
+	log.Infof("Importing Cursor account from API key (label=%q)...", label)
+
+	tokens, err := cursorauth.ExchangeAPIKey(ctx, apiKey)
+	if err != nil {
+		log.Errorf("Cursor API key import failed: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "failed to exchange api key: " + err.Error()})
+		return
+	}
+
+	metadata := map[string]any{
+		"type":          "cursor",
+		"access_token":  tokens.AccessToken,
+		"refresh_token": tokens.RefreshToken,
+		"timestamp":     time.Now().UnixMilli(),
+	}
+	if expiry := cursorauth.GetTokenExpiry(tokens.AccessToken); !expiry.IsZero() {
+		metadata["expires_at"] = expiry.Format(time.RFC3339)
+	}
+
+	sub := cursorauth.ParseJWTSub(tokens.AccessToken)
+	subHash := cursorauth.SubToShortHash(sub)
+	if sub != "" {
+		metadata["sub"] = sub
+	}
+
+	fileName := cursorauth.CredentialFileName(label, subHash)
+	displayLabel := cursorauth.DisplayLabel(label, subHash)
+	record := &coreauth.Auth{
+		ID:       fileName,
+		Provider: "cursor",
+		FileName: fileName,
+		Label:    displayLabel,
+		Metadata: metadata,
+	}
+
+	savedPath, errSave := h.saveTokenRecord(ctx, record)
+	if errSave != nil {
+		log.Errorf("Failed to save Cursor API key tokens: %v", errSave)
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to save tokens"})
+		return
+	}
+
+	log.Infof("Cursor API key import successful! Token saved to %s", savedPath)
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "ok",
+		"saved_path": savedPath,
+		"label":      displayLabel,
+		"sub":        sub,
+	})
+}
+
 func (h *Handler) RequestGitHubToken(c *gin.Context) {
 	ctx := context.Background()
 

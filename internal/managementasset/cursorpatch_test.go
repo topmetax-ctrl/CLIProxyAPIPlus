@@ -75,6 +75,50 @@ func TestApplyCursorPanelPatchLeavesUnknownLayoutUntouched(t *testing.T) {
 	}
 }
 
+const miniPanelHTML = `<html><body><div id="root"></div></body></html>`
+
+func TestApplyCursorPanelPatchInjectsAPIKeyOverlay(t *testing.T) {
+	if !strings.Contains(cursorOverlayJS, cursorOverlayMarker) {
+		t.Fatal("embedded overlay must carry CURSOR-OVERLAY-V1")
+	}
+	patched := ApplyCursorPanelPatch(miniPanelHTML)
+	if !strings.Contains(patched, cursorOverlayMarker) {
+		t.Fatalf("panel HTML must receive the API-key overlay:\n%s", patched)
+	}
+	if !strings.Contains(patched, `id="cursor-overlay"`) {
+		t.Fatalf("overlay script tag missing:\n%s", patched)
+	}
+	if !strings.Contains(patched, "Import API Key") {
+		t.Fatalf("overlay body missing:\n%s", patched)
+	}
+	bodyIdx := strings.LastIndex(patched, "</body>")
+	scriptIdx := strings.Index(patched, `id="cursor-overlay"`)
+	if !(scriptIdx >= 0 && bodyIdx > scriptIdx) {
+		t.Fatalf("overlay must sit before </body> (script=%d body=%d)", scriptIdx, bodyIdx)
+	}
+}
+
+func TestApplyCursorPanelPatchOverlayIsIdempotent(t *testing.T) {
+	once := ApplyCursorPanelPatch(miniPanelHTML)
+	twice := ApplyCursorPanelPatch(once)
+	if once != twice {
+		t.Fatalf("overlay patch must be a no-op on already patched HTML")
+	}
+	if got := strings.Count(once, cursorOverlayMarker); got != 1 {
+		t.Fatalf("expected one overlay marker, found %d", got)
+	}
+}
+
+func TestApplyCursorPanelPatchOverlaySurvivesExistingOAuthTile(t *testing.T) {
+	// A panel that already has the OAuth tile (in-memory or upstream) must
+	// still receive the import overlay. The OAuth early-return must not skip it.
+	already := strings.ReplaceAll(miniPanelHTML, "<div id=\"root\"></div>", "cursor_oauth_title:`Cursor OAuth`<div id=\"root\"></div>")
+	patched := ApplyCursorPanelPatch(already)
+	if !strings.Contains(patched, cursorOverlayMarker) {
+		t.Fatalf("overlay must inject even when OAuth strings are already present:\n%s", patched)
+	}
+}
+
 func TestCursorPatchedManagementHTMLCachesAndRefreshes(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "management.html")

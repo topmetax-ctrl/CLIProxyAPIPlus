@@ -205,6 +205,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowCookieToken)
 		mgmt.GET("/kiro-auth-url", s.mgmt.RequestKiroToken)
 		mgmt.GET("/cursor-auth-url", s.mgmt.RequestCursorToken)
+		mgmt.POST("/cursor-api-key", s.mgmt.ImportCursorAPIKey)
 		mgmt.GET("/github-auth-url", s.mgmt.RequestGitHubToken)
 		mgmt.GET("/qoder-auth-url", s.mgmt.RequestQoderToken)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
@@ -345,9 +346,9 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
-	// Serve with the Cursor OAuth panel patch applied in memory: the on-disk
-	// asset stays byte-identical to the upstream release so the auto-updater's
-	// hash comparison keeps working.
+	// Serve with the Cursor OAuth tile and API-key import overlay applied in
+	// memory: the on-disk asset stays byte-identical to the upstream release
+	// so the auto-updater's hash comparison keeps working.
 	data, err := managementasset.CursorPatchedManagementHTML(filePath)
 	if err != nil {
 		log.WithError(err).Error("failed to read management control panel asset")
