@@ -13,6 +13,35 @@ import (
 	"golang.org/x/net/context"
 )
 
+func TestGetContextWithCancelPropagatesRequestIDFromRequestContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req = req.WithContext(logging.WithRequestID(req.Context(), "req-from-gin"))
+	ginCtx.Request = req
+
+	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
+	ctx, cancel := handler.GetContextWithCancel(nil, ginCtx, context.Background())
+	defer cancel()
+	if got := logging.GetRequestID(ctx); got != "req-from-gin" {
+		t.Fatalf("GetRequestID(executor ctx) = %q, want req-from-gin", got)
+	}
+}
+
+func TestGetContextWithCancelFallsBackToGinRequestID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	logging.SetGinRequestID(ginCtx, "req-from-gin-map")
+
+	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
+	ctx, cancel := handler.GetContextWithCancel(nil, ginCtx, context.Background())
+	defer cancel()
+	if got := logging.GetRequestID(ctx); got != "req-from-gin-map" {
+		t.Fatalf("GetRequestID(executor ctx) = %q, want req-from-gin-map", got)
+	}
+}
+
 func TestGetContextWithCancelCapturesClientRequestMetadata(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())

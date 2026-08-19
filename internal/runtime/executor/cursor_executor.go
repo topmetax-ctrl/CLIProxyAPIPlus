@@ -24,6 +24,7 @@ import (
 	cursorauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor"
 	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -43,6 +44,8 @@ const (
 	cursorAuthType          = "cursor"
 	cursorHeartbeatInterval = 5 * time.Second
 	cursorSessionTTL        = 5 * time.Minute
+	cursorSessionHardTTL    = 30 * time.Minute
+	cursorConsumedIndexTTL  = 15 * time.Minute
 	cursorCheckpointTTL     = 30 * time.Minute
 	cursorStreamFlushDelay  = 16 * time.Millisecond
 	cursorStreamMaxBatch    = 512
@@ -77,7 +80,7 @@ var cursorNoProgressTimeout = func() time.Duration {
 type CursorExecutor struct {
 	cfg           *config.Config
 	mu            sync.Mutex
-	sessions      map[string]*cursorSession
+	conversations map[string]*conversationState
 	checkpoints   map[string]*savedCheckpoint  // keyed by conversationId
 	stateOwners   map[string]*cursorStateOwner // rejects writes from retired conversation owners
 	openStream    func(string) (cursorStream, error)
@@ -119,18 +122,26 @@ type cursorFrameProcessor func(
 ) error
 
 type cursorSession struct {
-	stream         cursorStream
-	blobStore      map[string][]byte
-	mcpTools       []cursorproto.McpToolDef
-	pending        []pendingMcpExec
-	cancel         context.CancelFunc // cancels the session-scoped heartbeat (NOT tied to HTTP request)
-	createdAt      time.Time
-	authID         string                                                                // auth file ID that created this session (for multi-account isolation)
-	toolResultCh   chan []toolResultInfo                                                 // receives tool results from the next HTTP request
-	resumeOutCh    chan cliproxyexecutor.StreamChunk                                     // output channel for resumed response
-	switchOutput   func(ch chan cliproxyexecutor.StreamChunk, outputCtx context.Context) // switch output channel/request context
-	conversationID string
-	owner          *cursorStateOwner
+	stream             cursorStream
+	blobStore          map[string][]byte
+	mcpTools           []cursorproto.McpToolDef
+	pending            []pendingMcpExec
+	cancel             context.CancelFunc // cancels the session-scoped heartbeat (NOT tied to HTTP request)
+	createdAt          time.Time
+	authID             string                                                                // auth file ID that created this session (for multi-account isolation)
+	toolResultCh       chan []toolResultInfo                                                 // receives tool results from the next HTTP request
+	resumeOutCh        chan cliproxyexecutor.StreamChunk                                     // output channel for resumed response
+	switchOutput       func(ch chan cliproxyexecutor.StreamChunk, outputCtx context.Context) // switch output channel/request context
+	conversationID     string
+	owner              *cursorStateOwner
+	generationID       string
+	parentGenerationID string
+	sourceRequestID    string
+	restoreCount       uint64
+	consumedAt         time.Time
+	updatedAt          time.Time
+	state              generationState
+	expiryWarned       bool
 }
 
 type pendingMcpExec struct {
@@ -144,10 +155,10 @@ type pendingMcpExec struct {
 // NewCursorExecutor constructs a new executor instance.
 func NewCursorExecutor(cfg *config.Config) *CursorExecutor {
 	e := &CursorExecutor{
-		cfg:         cfg,
-		sessions:    make(map[string]*cursorSession),
-		checkpoints: make(map[string]*savedCheckpoint),
-		stateOwners: make(map[string]*cursorStateOwner),
+		cfg:           cfg,
+		conversations: make(map[string]*conversationState),
+		checkpoints:   make(map[string]*savedCheckpoint),
+		stateOwners:   make(map[string]*cursorStateOwner),
 		openStream: func(accessToken string) (cursorStream, error) {
 			return openCursorH2Stream(accessToken)
 		},
@@ -164,16 +175,26 @@ func (e *CursorExecutor) Identifier() string { return cursorAuthType }
 func (e *CursorExecutor) CloseExecutionSession(sessionID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	closeState := func(state *conversationState) {
+		if state == nil {
+			return
+		}
+		for _, session := range state.generations {
+			if session.cancel != nil {
+				session.cancel()
+			}
+		}
+	}
 	if sessionID == cliproxyauth.CloseAllExecutionSessionsID {
-		for k, s := range e.sessions {
-			s.cancel()
-			delete(e.sessions, k)
+		for key, state := range e.conversations {
+			closeState(state)
+			delete(e.conversations, key)
 		}
 		return
 	}
-	if s, ok := e.sessions[sessionID]; ok {
-		s.cancel()
-		delete(e.sessions, sessionID)
+	if state, ok := e.conversations[sessionID]; ok {
+		closeState(state)
+		delete(e.conversations, sessionID)
 	}
 }
 
@@ -181,33 +202,26 @@ func (e *CursorExecutor) cleanupLoop() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		e.mu.Lock()
-		for k, s := range e.sessions {
-			if time.Since(s.createdAt) > cursorSessionTTL {
-				s.cancel()
-				delete(e.sessions, k)
-			}
-		}
-		for k, cp := range e.checkpoints {
-			if time.Since(cp.updatedAt) > cursorCheckpointTTL {
-				delete(e.checkpoints, k)
-			}
-		}
-		e.mu.Unlock()
+		e.expireStaleSessions()
 	}
 }
 
-// findSessionByConversationLocked searches for a session matching the given
-// conversationId regardless of authID. Used to find and clean up stale sessions
-// from a previous auth after quota failover. Caller must hold e.mu.
-func (e *CursorExecutor) findSessionByConversationLocked(convId string) string {
+// findConversationKeyByIDLocked returns a parked conversation key for convId
+// under a different sessionKey prefix. Caller must hold e.mu.
+func (e *CursorExecutor) findConversationKeyByIDLocked(convId string) string {
 	suffix := ":" + convId
-	for k := range e.sessions {
-		if strings.HasSuffix(k, suffix) {
-			return k
+	for key := range e.conversations {
+		if strings.HasSuffix(key, suffix) {
+			return key
 		}
 	}
 	return ""
+}
+
+func (e *CursorExecutor) findConversationKeyByIDLockedSafe(convId string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.findConversationKeyByIDLocked(convId)
 }
 
 // retireConversationState atomically makes all existing owners for a
@@ -216,19 +230,27 @@ func (e *CursorExecutor) findSessionByConversationLocked(convId string) string {
 func (e *CursorExecutor) retireConversationState(conversationID string) {
 	var retired []*cursorSession
 	var owner *cursorStateOwner
-	suffix := ":" + conversationID
+	var retiredEvents []cursorSessionReplaceEvent
 
 	e.mu.Lock()
 	owner = e.stateOwners[conversationID]
 	delete(e.stateOwners, conversationID)
-	for key, session := range e.sessions {
-		if strings.HasSuffix(key, suffix) {
-			delete(e.sessions, key)
-			retired = append(retired, session)
+	sessions, keys := e.collectConversationSessions(conversationID)
+	retired = sessions
+	for _, key := range keys {
+		state := e.conversations[key]
+		if state != nil {
+			for _, session := range state.generations {
+				retiredEvents = append(retiredEvents, cursorSessionReplaceEvent{key: key, old: snapshotCursorSession(session)})
+			}
 		}
+		delete(e.conversations, key)
 	}
 	delete(e.checkpoints, conversationID)
 	e.mu.Unlock()
+	for _, event := range retiredEvents {
+		logCursorSessionReplace(event.key, "retire_conversation", event.old, nil)
+	}
 
 	if owner != nil {
 		if owner.cancel != nil {
@@ -279,18 +301,10 @@ func (e *CursorExecutor) attachConversationStream(conversationID string, owner *
 }
 
 func (e *CursorExecutor) publishConversationSession(conversationID, sessionKey string, owner *cursorStateOwner, session *cursorSession, replace bool) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.stateOwners[conversationID] != owner {
-		return false
+	if replace {
+		return e.parkGeneration(conversationID, sessionKey, owner, session)
 	}
-	if _, exists := e.sessions[sessionKey]; exists && !replace {
-		return false
-	}
-	session.conversationID = conversationID
-	session.owner = owner
-	e.sessions[sessionKey] = session
-	return true
+	return e.reparkGeneration(conversationID, sessionKey, owner, session)
 }
 
 func (e *CursorExecutor) saveCheckpoint(conversationID string, owner *cursorStateOwner, checkpoint *savedCheckpoint) bool {
@@ -321,6 +335,9 @@ func (e cursorStatusErr) RetryAfter() *time.Duration { return nil } // no retry-
 func classifyCursorError(err error) error {
 	if err == nil {
 		return nil
+	}
+	if isCursorLocalSessionError(err) {
+		return err
 	}
 
 	// Layer 1: structured ConnectError from ParseConnectEndStream
@@ -723,55 +740,36 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		log.Infof("cursor: using cold continuation for %d tool result(s)", len(parsed.ToolResults))
 	}
 
-	// Native Claude requests retain the existing same-stream resume path.
+	// Native Claude requests correlate tool results to the exact parked
+	// generation via (sessionKey, toolCallID). A later generation must not
+	// steal an earlier pending batch.
 	if len(parsed.ToolResults) > 0 && !coldToolContinuation {
-		e.mu.Lock()
-		session, hasSession := e.sessions[sessionKey]
-		if hasSession {
-			delete(e.sessions, sessionKey)
+		incoming := incomingToolCallIDs(parsed.ToolResults)
+		session, errResolve := e.resolveGenerationForToolResults(sessionKey, incoming)
+		if errResolve != nil {
+			return nil, errResolve
 		}
-		if !hasSession {
-			if oldKey := e.findSessionByConversationLocked(conversationId); oldKey != "" {
-				oldSession := e.sessions[oldKey]
-				log.Infof("cursor: cleaning up stale session from auth %s for conv=%s (auth migrated to %s)", oldSession.authID, conversationId, authID)
-				oldSession.cancel()
-				if oldSession.stream != nil {
-					oldSession.stream.Close()
+		if session != nil {
+			e.noteGenerationRestore(session)
+			logCursorSessionRestore(sessionKey, logging.GetRequestID(ctx), snapshotCursorSession(session))
+			if session.stream != nil && session.authID == authID {
+				log.Debugf("cursor: resuming generation %s for %d tool results", session.generationID, len(parsed.ToolResults))
+				result, errResume := e.resumeWithToolResults(ctx, sessionKey, session, parsed, from, to, req, originalPayload, payload, needsTranslate)
+				if errResume == nil {
+					reporter.EnsurePublished(ctx)
 				}
-				delete(e.sessions, oldKey)
+				return result, errResume
 			}
-		}
-		e.mu.Unlock()
-
-		if hasSession && session.stream != nil && session.authID == authID {
-			log.Debugf("cursor: resuming session %s with %d tool results", sessionKey, len(parsed.ToolResults))
-			result, errResume := e.resumeWithToolResults(ctx, sessionKey, session, parsed, from, to, req, originalPayload, payload, needsTranslate)
-			if errResume == nil {
-				// The parked worker goroutine owns the token totals for this
-				// conversation; count the resume request itself here.
-				reporter.EnsurePublished(ctx)
+			if session.authID != authID {
+				log.Warnf("cursor: generation %s belongs to auth %s, but request is from %s — skipping resume", session.generationID, session.authID, authID)
 			}
-			return result, errResume
-		}
-		if hasSession && session.authID != authID {
-			log.Warnf("cursor: session %s belongs to auth %s, but request is from %s — skipping resume", sessionKey, session.authID, authID)
+		} else if otherKey := e.findConversationKeyByIDLockedSafe(conversationId); otherKey != "" && otherKey != sessionKey {
+			log.Infof("cursor: other-auth conversation %s still has parked generations for conv=%s; leaving them in place", otherKey, conversationId)
 		}
 	}
 
-	// Clean up any stale session for this key (or from a previous auth on same conversation)
-	e.mu.Lock()
-	if old, ok := e.sessions[sessionKey]; ok {
-		old.cancel()
-		delete(e.sessions, sessionKey)
-	} else if oldKey := e.findSessionByConversationLocked(conversationId); oldKey != "" {
-		old := e.sessions[oldKey]
-		old.cancel()
-		if old.stream != nil {
-			old.stream.Close()
-		}
-		delete(e.sessions, oldKey)
-	}
-	e.mu.Unlock()
+	// A new stream creates a new generation. Do not evict siblings that still
+	// have pending tool calls.
 	streamOwner := e.beginConversationStream(conversationId)
 	workerOwnsState := false
 	defer func() {
@@ -1015,15 +1013,17 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 				log.Debugf("cursor: saving session %s for MCP tool resume (%d pending call(s))", sessionKey, len(execs))
 				outMu.Lock()
 				session := &cursorSession{
-					stream:       stream,
-					blobStore:    params.BlobStore,
-					mcpTools:     params.McpTools,
-					pending:      append([]pendingMcpExec(nil), execs...),
-					cancel:       sessionCancel,
-					createdAt:    time.Now(),
-					authID:       authID,
-					toolResultCh: toolResultCh, // reuse same channel across rounds
-					resumeOutCh:  resumeOut,
+					stream:          stream,
+					blobStore:       params.BlobStore,
+					mcpTools:        params.McpTools,
+					pending:         append([]pendingMcpExec(nil), execs...),
+					cancel:          sessionCancel,
+					createdAt:       time.Now(),
+					authID:          authID,
+					generationID:    uuid.New().String(),
+					sourceRequestID: logging.GetRequestID(ctx),
+					toolResultCh:    toolResultCh, // reuse same channel across rounds
+					resumeOutCh:     resumeOut,
 					switchOutput: func(ch chan cliproxyexecutor.StreamChunk, outputCtx context.Context) {
 						outMu.Lock()
 						currentOut = ch
@@ -1189,25 +1189,27 @@ func (e *CursorExecutor) resumeWithToolResults(
 		}
 	}
 	restoreSession := func() {
-		restored := e.publishConversationSession(session.conversationID, sessionKey, session.owner, session, false)
+		restored := e.reparkGeneration(session.conversationID, sessionKey, session.owner, session)
 		if !restored {
-			// A concurrent request replaced this session while ownership was in
-			// transit. It is no longer safe to restore, so release its resources.
+			// The conversation was retired while this resume was in flight.
 			closeSession()
 		}
 	}
 	if session.toolResultCh == nil {
 		closeSession()
-		return nil, fmt.Errorf("cursor: session has no toolResultCh (stale session?)")
+		return nil, cursorLocalError(localSessionStateMismatch, http.StatusBadRequest, errSessionMissingToolChannel)
 	}
 	if session.resumeOutCh == nil {
 		closeSession()
-		return nil, fmt.Errorf("cursor: session has no resumeOutCh")
+		return nil, cursorLocalError(localSessionStateMismatch, http.StatusBadRequest, errSessionMissingResumeOut)
 	}
 	if err := ctx.Err(); err != nil {
 		restoreSession()
 		return nil, err
 	}
+	incomingIDs := incomingToolCallIDs(parsed.ToolResults)
+	pendingIDs := pendingToolCallIDs(session.pending)
+	logCursorToolResultMatch(sessionKey, logging.GetRequestID(ctx), snapshotCursorSession(session), pendingIDs, incomingIDs)
 	matchedPending := false
 	for _, result := range parsed.ToolResults {
 		for _, pending := range session.pending {
@@ -1222,8 +1224,10 @@ func (e *CursorExecutor) resumeWithToolResults(
 	}
 	if !matchedPending {
 		restoreSession()
-		return nil, fmt.Errorf("cursor: tool results do not match any pending tool call")
+		return nil, cursorLocalError(localSessionStateMismatch, http.StatusBadRequest, errToolResultMismatch)
 	}
+	previousPending := append([]pendingMcpExec(nil), session.pending...)
+	e.consumeToolResults(sessionKey, session, incomingIDs)
 
 	log.Debugf("cursor: resumeWithToolResults: switching output to resumeOutCh and injecting results")
 
@@ -1238,6 +1242,7 @@ func (e *CursorExecutor) resumeWithToolResults(
 	select {
 	case session.toolResultCh <- parsed.ToolResults:
 	case <-ctx.Done():
+		e.restoreConsumedToolResults(sessionKey, session, previousPending)
 		restoreSession()
 		return nil, ctx.Err()
 	}
@@ -1552,9 +1557,15 @@ func processH2SessionFrames(
 		}
 
 		log.Debugf("cursor: waiting for %d tool result(s) on channel (inline mode)...", len(batch))
-		var toolResults []toolResultInfo
+		needed := make(map[string]struct{}, len(batch))
+		for _, pending := range batch {
+			if pending.ToolCallId != "" {
+				needed[pending.ToolCallId] = struct{}{}
+			}
+		}
+		received := make(map[string]toolResultInfo, len(needed))
 	waitLoop:
-		for {
+		for len(received) < len(needed) {
 			select {
 			case <-ctx.Done():
 				return false, ctx.Err()
@@ -1562,8 +1573,15 @@ func processH2SessionFrames(
 				if !ok {
 					return true, nil
 				}
-				toolResults = results
-				break waitLoop
+				for _, result := range results {
+					if _, want := needed[result.ToolCallId]; want {
+						received[result.ToolCallId] = result
+					}
+				}
+				if len(needed) == 0 {
+					break waitLoop
+				}
+				continue
 			case waitData, ok := <-stream.Data():
 				if !ok {
 					return false, stream.Err()
@@ -1611,14 +1629,13 @@ func processH2SessionFrames(
 		// Send an MCP result for every pending call in the batch. Results are
 		// matched to their originating call by tool_call_id.
 		for _, pending := range batch {
-			for _, tr := range toolResults {
-				if tr.ToolCallId == pending.ToolCallId {
-					log.Debugf("cursor: sending inline MCP result for tool=%s", pending.ToolName)
-					resultBytes := cursorproto.EncodeExecMcpResult(pending.ExecMsgId, pending.ExecId, tr.Content, false)
-					stream.Write(cursorproto.FrameConnectMessage(resultBytes, 0))
-					break
-				}
+			tr, ok := received[pending.ToolCallId]
+			if !ok {
+				continue
 			}
+			log.Debugf("cursor: sending inline MCP result for tool=%s", pending.ToolName)
+			resultBytes := cursorproto.EncodeExecMcpResult(pending.ExecMsgId, pending.ExecId, tr.Content, false)
+			stream.Write(cursorproto.FrameConnectMessage(resultBytes, 0))
 		}
 		return false, nil
 	}

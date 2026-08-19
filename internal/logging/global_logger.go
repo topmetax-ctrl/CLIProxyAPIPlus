@@ -38,6 +38,12 @@ var logFieldOrder = []string{
 	"mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error",
 	"credential", "connection", "proxy_scheme", "remote_transport",
 	"media_session_id", "call_id", "peer", "state", "reason",
+	"event", "session_key_hash", "generation_id", "parent_generation_id", "previous_generation_id",
+	"source_request_id", "consumer_request_id",
+	"pending_count", "pending_set_hash", "incoming_count", "incoming_set_hash", "intersection_count",
+	"old_generation_id", "old_request_id", "old_pending_count", "old_pending_hash",
+	"new_generation_id", "new_request_id", "new_pending_count", "new_pending_hash",
+	"restore_count", "replace",
 }
 
 var quotedLogFields = map[string]struct{}{

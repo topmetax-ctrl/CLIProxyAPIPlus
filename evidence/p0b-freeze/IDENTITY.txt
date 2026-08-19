@@ -1,0 +1,10 @@
+frozen_at: 2026-08-19T11:44:59Z
+version: audit-p0b
+commit: 23ed67cb
+built_at: 2026-08-19T10:28:13Z
+binary: evidence/p0b-freeze/cliproxy-audit-p0b-23ed67cb
+running_pid: 6363
+listen: :8317
+logfile: /tmp/cliproxy-audit.log (NOT overwritten; P0-G will use /tmp/cliproxy-p0g.log)
+sha256: 71fb3b1120689fc4bdc29db51e8415dce82fe4c6d618e0533da77d55dcd7e349
+-rwxr-xr-x  1 macdev  staff  94411424 Aug 19 17:28 cliproxy-audit

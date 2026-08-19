@@ -251,13 +251,8 @@ func TestCursorExecuteStreamClaudeThinkingToolBoundaryAndResume(t *testing.T) {
 	if thinkingAt < 0 || thinkingTextAt < thinkingAt || answerAt < thinkingTextAt || toolAt < answerAt || toolIDAt < toolAt || toolStopAt < toolIDAt {
 		t.Fatalf("Claude thinking/text/tool boundary order invalid:\n%s", firstBody)
 	}
-	e.mu.Lock()
-	publishedSessions := len(e.sessions)
-	var publishedPending []pendingMcpExec
-	for _, session := range e.sessions {
-		publishedPending = append(publishedPending, session.pending...)
-	}
-	e.mu.Unlock()
+	publishedSessions := e.parkedGenerationCount()
+	publishedPending := e.collectParkedPending()
 	if publishedSessions != 1 || len(publishedPending) != 1 || publishedPending[0].ToolCallId != clientToolCallID {
 		t.Fatalf("tool boundary closed before resumable session publication: sessions=%d pending=%#v", publishedSessions, publishedPending)
 	}
@@ -403,15 +398,15 @@ func TestCursorExecuteColdContinuationRetiresAllConversationState(t *testing.T) 
 		onText("continued", false)
 		return nil
 	})
-	e.sessions["old-auth:"+conversationID] = &cursorSession{stream: firstStream, cancel: func() { canceled++ }}
-	e.sessions["cursor-test:"+conversationID] = &cursorSession{stream: secondStream, cancel: func() { canceled++ }}
+	e.seedParkedSession("old-auth:"+conversationID, &cursorSession{stream: firstStream, cancel: func() { canceled++ }})
+	e.seedParkedSession("cursor-test:"+conversationID, &cursorSession{stream: secondStream, cancel: func() { canceled++ }})
 	e.checkpoints[conversationID] = &savedCheckpoint{data: []byte("stale")}
 
 	if _, err := e.Execute(context.Background(), cursorTestAuth(), cliproxyexecutor.Request{Model: "cursor-test-model", Payload: payload}, cliproxyexecutor.Options{}); err != nil {
 		t.Fatal(err)
 	}
+	sessions := e.parkedGenerationCount()
 	e.mu.Lock()
-	sessions := len(e.sessions)
 	_, checkpointExists := e.checkpoints[conversationID]
 	e.mu.Unlock()
 	if sessions != 0 || checkpointExists || canceled != 2 {
@@ -497,9 +492,12 @@ func TestCursorConversationRetirementWinsAgainstClaimedSessionRestoreAndPublicat
 	default:
 		t.Fatal("claimed in-flight stream was not closed by retirement")
 	}
+	if e.parkedGenerationCount() != 0 {
+		t.Fatal("conversation state reappeared after retirement")
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if len(e.sessions) != 0 || e.stateOwners[conversationID] != nil || e.checkpoints[conversationID] != nil {
+	if e.stateOwners[conversationID] != nil || e.checkpoints[conversationID] != nil {
 		t.Fatal("conversation state reappeared after retirement")
 	}
 }
@@ -682,10 +680,7 @@ func TestCursorResumeCancellationRestoresSession(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("resumeWithToolResults() error = %v, want context.Canceled", err)
 	}
-	e.mu.Lock()
-	restored := e.sessions[sessionKey]
-	e.mu.Unlock()
-	if restored != session {
+	if !e.hasParkedSession(sessionKey, session) {
 		t.Fatal("canceled resume did not restore owned session")
 	}
 	select {
@@ -720,11 +715,8 @@ func TestCursorResumeInvalidSessionIsDiscarded(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no toolResultCh") {
 		t.Fatalf("resumeWithToolResults() error = %v", err)
 	}
-	e.mu.Lock()
-	restored := e.sessions[sessionKey]
-	e.mu.Unlock()
-	if restored != nil || !canceled {
-		t.Fatalf("invalid session was retained: restored=%v canceled=%v", restored != nil, canceled)
+	if e.hasParkedSession(sessionKey, session) || !canceled {
+		t.Fatalf("invalid session was retained: restored=%v canceled=%v", e.hasParkedSession(sessionKey, session), canceled)
 	}
 	select {
 	case <-stream.dead:
@@ -762,11 +754,8 @@ func TestCursorResumeRejectsUnmatchedToolResultAndRestoresSession(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "do not match") {
 		t.Fatalf("resumeWithToolResults() error = %v", err)
 	}
-	e.mu.Lock()
-	restored := e.sessions[sessionKey]
-	e.mu.Unlock()
-	if restored != session || switched {
-		t.Fatalf("unmatched result lost session ownership: restored=%v switched=%v", restored == session, switched)
+	if !e.hasParkedSession(sessionKey, session) || switched {
+		t.Fatalf("unmatched result lost session ownership: restored=%v switched=%v", e.hasParkedSession(sessionKey, session), switched)
 	}
 	select {
 	case results := <-session.toolResultCh:
@@ -813,10 +802,7 @@ func TestCursorOpenAIToolResultUsesColdContinuation(t *testing.T) {
 	if !strings.Contains(firstBody, `"finish_reason":"tool_calls"`) || strings.Contains(firstBody, `"finish_reason":"stop"`) {
 		t.Fatalf("first OpenAI tool boundary is invalid:\n%s", firstBody)
 	}
-	e.mu.Lock()
-	parkedSessions := len(e.sessions)
-	e.mu.Unlock()
-	if parkedSessions != 0 {
+	if parkedSessions := e.parkedGenerationCount(); parkedSessions != 0 {
 		t.Fatalf("OpenAI tool call parked %d H2 session(s)", parkedSessions)
 	}
 

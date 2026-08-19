@@ -101,6 +101,38 @@ func TestLogFormatterPrintsPluginFields(t *testing.T) {
 	}
 }
 
+func TestLogFormatterPrintsCursorSessionCorrelationFields(t *testing.T) {
+	entry := log.NewEntry(log.New())
+	entry.Time = time.Date(2026, 8, 19, 18, 0, 0, 0, time.Local)
+	entry.Level = log.DebugLevel
+	entry.Message = "cursor session restore"
+	entry.Data["event"] = "cursor_session_restore"
+	entry.Data["generation_id"] = "gen-A"
+	entry.Data["source_request_id"] = "req-A"
+	entry.Data["consumer_request_id"] = "req-A-result"
+	entry.Data["intersection_count"] = 1
+	entry.Data["pending_count"] = 1
+
+	formatted, errFormat := (&LogFormatter{}).Format(entry)
+	if errFormat != nil {
+		t.Fatalf("Format() error = %v", errFormat)
+	}
+
+	line := string(formatted)
+	for _, want := range []string{
+		"event=cursor_session_restore",
+		"generation_id=gen-A",
+		"source_request_id=req-A",
+		"consumer_request_id=req-A-result",
+		"intersection_count=1",
+		"pending_count=1",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("formatted line %q missing %s", line, want)
+		}
+	}
+}
+
 func TestLogFormatterOmitsGenericPathField(t *testing.T) {
 	entry := log.NewEntry(log.New())
 	entry.Time = time.Date(2026, 6, 25, 20, 20, 0, 0, time.Local)

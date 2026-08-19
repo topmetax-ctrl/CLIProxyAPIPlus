@@ -1,0 +1,52 @@
+P0-G live canary — 2026-08-19
+
+Binary
+  path:     ./cliproxy-p0g
+  version:  fix-multigen-p0g
+  commit:   23ed67cb (working tree includes P0-C..F + formatter field whitelist)
+  built_at: 2026-08-19T11:50:48Z
+  sha256:   b3a87b9f68a9f4093ffbb3874d6d6dfbb8c8eae9941991d22d6a6f142b70d8db
+  listen:   :8317 via LaunchAgent com.cursorapi.cliproxy-audit
+  log:      /tmp/cliproxy-p0g.log
+  debug:    true
+  models:   GET /v1/models → 200 (204 models)
+
+P0-B freeze (not overwritten)
+  binary: evidence/p0b-freeze/cliproxy-audit-p0b-23ed67cb
+  log:    /tmp/cliproxy-audit.log
+  plist:  evidence/p0b-freeze/com.cursorapi.cliproxy-audit.plist.p0b
+
+Gate
+  go test ./internal/runtime/executor/... -count=1          PASS
+  go test ./sdk/api/handlers/... -count=1                   PASS
+  go test -race executor session tests -count=10            PASS (156s)
+  go test -race ./internal/runtime/executor/helps -count=10 PASS
+  go test -race ./internal/runtime/executor/... -count=10   NOT COMPLETE
+      full package hung in Codex/xAI websocket tests (unrelated; P0-H)
+
+Live cases (Claude /v1/messages → Cursor, model cursor-grok-4.6-xhigh-fast)
+
+  C1 sequential     PASS  park gen-A → restore gen-A intersection=1
+  C2 overlap        PASS  park A, park B (same session_key, replace=false),
+                          result A restored gen-A not B, then B restored gen-B
+  C3 reverse        PASS  B then A, each restore matched its own generation
+  C4 multi-tool     PASS  park pending_count=3 then park B, replace=false.
+                          Claude only surfaced 1 of 3 IDs so HTTP partial-resume
+                          was skipped (H2 wait loop needs the full batch).
+  C5 retry          PASS  duplicate → 409 TOOL_RESULT_ALREADY_CONSUMED;
+                          unrelated follow-up 200, no 503
+  C6 main+sub       PASS  distinct session_keys; main result restored main gen.
+                          Not a same-session_id subagent; C2 covers that topology.
+  P0E local miss    PASS  parked generation + unknown id → 400 TOOL_RESULT_NOT_FOUND;
+                          follow-up 200; real result still restored the parked gen.
+
+Canary-window faults (18:56–18:59)
+  intersection_count=0                         0
+  replace-with-pending                         0
+  matcher 500 / auth_unavailable / 503         0
+  ExecuteStream errors                         2 (intentional C5 duplicate + P0E miss)
+
+Formatter note
+  Live audit-p0b logs dropped generation_id because LogFormatter only prints
+  logFieldOrder. P0-G added those correlation keys so PARK/RESTORE/MATCH are
+  evidence-grade. Session semantics were not changed.

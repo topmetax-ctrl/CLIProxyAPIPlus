@@ -1,0 +1,216 @@
+[2026-08-19 16:40:27] [--------] [warn ] [cursor_executor.go:675] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 16:43:14] [--------] [warn ] [cursor_executor.go:675] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 16:43:34] [--------] [warn ] [cursor_executor.go:675] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 16:43:52] [--------] [warn ] [cursor_executor.go:675] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 16:44:28] [--------] [warn ] [cursor_executor.go:675] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 16:45:04] [--------] [warn ] [cursor_executor.go:675] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 16:45:43] [--------] [warn ] [cursor_executor.go:675] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 16:46:21] [--------] [warn ] [cursor_executor.go:675] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 16:52:12] [--------] [warn ] [cursor_executor.go:675] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 17:13:35] [--------] [warn ] [cursor_executor.go:675] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 18:04:14] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:04:15] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:04:15] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:04:22] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:04:23] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:04:23] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:04:33] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:04:33] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:04:33] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:04:38] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:04:38] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:04:38] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:04:49] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:04:49] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:04:49] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:05:01] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:05:02] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:05:02] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:05:16] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:05:17] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:05:17] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:05:27] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:05:28] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:05:28] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:05:45] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:05:46] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:05:46] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:05:56] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:05:57] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:05:57] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:06:09] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:06:09] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:06:09] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:06:19] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:06:20] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:06:20] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:06:25] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:06:26] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:06:26] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:11:14] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:11:15] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:11:15] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:11:27] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:11:28] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:11:28] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:11:41] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:11:42] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:11:42] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:11:56] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:11:57] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:11:57] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:12:17] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:12:18] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:12:18] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:12:28] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:12:28] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:12:28] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:12:52] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:12:53] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:12:53] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:13:00] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:13:01] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:13:01] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:13:09] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:13:10] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:13:10] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:13:13] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:13:14] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:13:14] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:13:31] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:13:32] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:13:32] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:13:35] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:13:36] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:13:36] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:13:40] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:13:40] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:13:40] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:14:05] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:14:07] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:14:07] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:14:13] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:14:14] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:14:14] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:14:16] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:14:17] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:14:17] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:14:27] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:14:28] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:14:28] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:14:35] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:14:36] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:14:36] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:14:37] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:14:38] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:14:38] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:14:40] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:14:41] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:14:41] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:19:13] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:19:14] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:19:14] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:19:19] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:19:32] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:19:32] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:19:38] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:19:40] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:19:40] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:19:46] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:19:50] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:19:50] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:19:51] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:19:52] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:19:52] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:25:02] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:25:03] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:25:03] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:25:14] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:25:15] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:25:15] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:25:20] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:25:21] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:25:21] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:25:27] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:25:27] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:25:27] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:29:54] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:29:55] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:29:55] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:29:58] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:29:58] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:29:58] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:34:40] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:34:40] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:34:40] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:34:46] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:34:47] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:34:47] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:34:52] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:34:52] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:34:52] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:34:57] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:34:58] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:34:58] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:01] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:01] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:01] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:04] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:05] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:05] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:08] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:09] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:09] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:13] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:13] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:13] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:17] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:18] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:18] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:20] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:21] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:21] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:31] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:32] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:32] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:42] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:42] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:42] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:46] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:47] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:47] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:49] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:50] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:50] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:54] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:35:54] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:35:54] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:35:59] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:36:00] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:36:00] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:36:02] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:36:11] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:36:11] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:36:16] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:36:16] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:36:16] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:36:20] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:36:21] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:36:21] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:36:24] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:36:28] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:36:28] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:36:32] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:36:35] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:36:35] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:36:38] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:36:39] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:36:39] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:36:42] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:36:42] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:36:42] [--------] [debug] [cursor_session_trace.go:265] cursor tool result match
+[2026-08-19 18:40:26] [--------] [debug] [cursor_session_trace.go:175] cursor session park
+[2026-08-19 18:40:26] [--------] [debug] [cursor_session_trace.go:229] cursor session restore
+[2026-08-19 18:40:26] [--------] [warn ] [cursor_session_trace.go:262] cursor tool results do not intersect parked pending IDs
+[2026-08-19 18:40:26] [--------] [warn ] [cursor_executor.go:716] cursor ExecuteStream error: cursor: tool results do not match any pending tool call
+[2026-08-19 18:45:52] [--------] [warn ] [cursor_session_trace.go:201] cursor session replaced while previous generation still had pending tool calls reason="ttl_expire"

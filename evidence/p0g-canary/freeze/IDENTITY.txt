@@ -1,0 +1,27 @@
+frozen_at: 2026-08-19T12:10:54Z
+phase: P0-H0
+canary_status: PASS (C1-C6, P0E)
+
+dirty_canary_binary (the process that passed live canary):
+  path: evidence/p0g-canary/freeze/cliproxy-p0g-canary-dirty-23ed67cb
+  original: ./cliproxy-p0g
+  version: fix-multigen-p0g
+  embedded_commit: 23ed67cb  # NOT equal to source tree; working tree had P0-C..G
+  git_head_at_freeze: 23ed67cb (23ed67cbd3e7fb7d3c770edc80c83da5655299db)
+  built_at: 2026-08-19T11:50:48Z
+  size: 94466768
+  sha256: b3a87b9f68a9f4093ffbb3874d6d6dfbb8c8eae9941991d22d6a6f142b70d8db
+  listen: :8317 via LaunchAgent com.cursorapi.cliproxy-audit
+
+log:
+  live: /tmp/cliproxy-p0g.log
+  copy: evidence/p0g-canary/freeze/cliproxy-p0g.log
+  bytes: 2407345
+
+source_diff:
+  evidence/p0g-canary/freeze/working-tree.diff
+  (config-cursor-audit.yaml secret-key rotation was reverted and is not in this freeze)
+
+do_not_rollback_to:
+  audit-p0b / evidence/p0b-freeze/cliproxy-audit-p0b-23ed67cb
+  reason: that binary still has the one-slot overwrite bug

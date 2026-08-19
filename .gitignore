@@ -76,3 +76,15 @@ docker-compose.override.yml
 
 # Local LLM Wiki vault
 .llm-wiki
+
+# Local audit/canary binaries and investigation dumps (P0-H0 freeze)
+/cliproxy-p0g
+/cliproxy-p0g-*
+.playwright-mcp/
+cursor-oauth-*.png
+scripts/cursor-panel-overlay.js
+scripts/inject-cursor-overlay.py
+evidence/p0b-freeze/cliproxy-*
+evidence/p0g-canary/freeze/cliproxy-*
+evidence/tool-result-id/
+internal/runtime/executor/testdata/

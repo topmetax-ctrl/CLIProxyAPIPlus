@@ -22,10 +22,30 @@ import (
 )
 
 func resetAntigravityCreditsRetryState() {
-	antigravityCreditsFailureByAuth = sync.Map{}
-	antigravityShortCooldownByAuth = sync.Map{}
-	antigravityCreditsBalanceByAuth = sync.Map{}
-	antigravityCreditsHintRefreshByID = sync.Map{}
+	waitAntigravityCreditsHintRefreshes()
+	clearSyncMap(&antigravityCreditsFailureByAuth)
+	clearSyncMap(&antigravityShortCooldownByAuth)
+	clearSyncMap(&antigravityCreditsBalanceByAuth)
+	clearSyncMap(&antigravityCreditsHintRefreshByID)
+}
+
+func waitAntigravityCreditsHintRefreshes() {
+	antigravityCreditsHintRefreshByID.Range(func(_, value any) bool {
+		state, ok := value.(*antigravityCreditsHintRefreshState)
+		if !ok || state == nil {
+			return true
+		}
+		state.mu.Lock()
+		state.mu.Unlock()
+		return true
+	})
+}
+
+func clearSyncMap(m *sync.Map) {
+	m.Range(func(key, _ any) bool {
+		m.Delete(key)
+		return true
+	})
 }
 
 type closeSignalReadCloser struct {

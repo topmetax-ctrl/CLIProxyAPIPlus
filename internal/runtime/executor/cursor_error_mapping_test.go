@@ -2,6 +2,7 @@ package executor
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
@@ -37,6 +38,16 @@ func TestClassifyCursorErrorConnectCodes(t *testing.T) {
 		if got := statusOf(t, err); got != want {
 			t.Fatalf("code %q mapped to %d, want %d", code, got, want)
 		}
+	}
+}
+
+func TestClassifyCursorErrorLocalSessionPassthrough(t *testing.T) {
+	err := cursorLocalError(localMixedGeneration, 409, errMixedToolResultGenerations)
+	if got := classifyCursorError(err); got != err {
+		t.Fatalf("classifyCursorError remapped local error to %v", got)
+	}
+	if got := classifyCursorError(fmt.Errorf("wrap: %w", err)); !isCursorLocalSessionError(got) {
+		t.Fatalf("classifyCursorError dropped wrapped local error: %v", got)
 	}
 }
 
