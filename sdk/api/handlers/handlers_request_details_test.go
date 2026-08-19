@@ -75,6 +75,20 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 			wantErr:       false,
 		},
 		{
+			name:          "cloaked listing id decoded",
+			inputModel:    "claude-fable-5-dd-raw.gpt-5.2",
+			wantProviders: []string{"openai"},
+			wantModel:     "gpt-5.2",
+			wantErr:       false,
+		},
+		{
+			name:          "cloaked listing id keeps thinking suffix",
+			inputModel:    "claude-fable-5-dd-raw.gpt-5.2(high)",
+			wantProviders: []string{"openai"},
+			wantModel:     "gpt-5.2(high)",
+			wantErr:       false,
+		},
+		{
 			name:          "unknown model with suffix",
 			inputModel:    "unknown-model(8192)",
 			wantProviders: nil,
@@ -127,6 +141,29 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 // model error body against client-controlled model names. The name is echoed into
 // the body, so formatting it into a JSON literal would let a caller corrupt the
 // payload or overwrite the error code that clients branch on.
+func TestGetRequestDetails_UnknownModelDoesNotFallbackToCursor(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	const clientID = "request-details-cursor-no-fallback"
+	modelRegistry.RegisterClient(clientID, "cursor", []*registry.ModelInfo{
+		{ID: "cursor-grok-4.6-xhigh-fast", Created: time.Now().Unix()},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(clientID)
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	providers, model, errMsg := handler.getRequestDetails("cursor-grok-4.7-typo")
+	if errMsg == nil {
+		t.Fatalf("getRequestDetails() providers = %v model = %q, want unknown-model error", providers, model)
+	}
+	if errMsg.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", errMsg.StatusCode, http.StatusBadRequest)
+	}
+	if got := gjson.Get(errMsg.Error.Error(), "error.code").String(); got != "model_not_found" {
+		t.Fatalf("error code = %q, want model_not_found", got)
+	}
+}
+
 func TestGetRequestDetails_UnknownModelErrorResistsJSONInjection(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
 

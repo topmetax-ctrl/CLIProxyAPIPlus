@@ -68,8 +68,20 @@ type SDKConfig struct {
 
 // ClaudeCodeConfig configures Claude Code compatibility behavior.
 type ClaudeCodeConfig struct {
-	// DisableCloakingModelList disables model ID cloaking in Anthropic model list responses.
+	// CloakModelList rewrites non-claude IDs in Anthropic /v1/models so Claude
+	// Code's picker (which filters ids containing "claude" or "anthropic") can
+	// show them. Default false keeps the public listing ID canonical.
+	CloakModelList bool `yaml:"cloak-model-list" json:"cloak-model-list"`
+
+	// DisableCloakingModelList is the legacy force-off switch. When true,
+	// listing IDs stay canonical even if CloakModelList is set.
 	DisableCloakingModelList bool `yaml:"disable-cloaking-model-list" json:"disable-cloaking-model-list"`
+}
+
+// CloakAnthropicListing reports whether Anthropic /v1/models should rewrite
+// non-claude IDs. Cloaking is opt-in and never depends on User-Agent.
+func (c ClaudeCodeConfig) CloakAnthropicListing() bool {
+	return c.CloakModelList && !c.DisableCloakingModelList
 }
 
 // StreamingConfig holds server streaming behavior configuration.

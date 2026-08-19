@@ -47,6 +47,72 @@ func TestClaudeModelsResponseUsesConfiguredDisplayName(t *testing.T) {
 	t.Fatalf("model %q not found in response", modelID)
 }
 
+func TestClaudeModelsResponseKeepsCanonicalIDsByDefault(t *testing.T) {
+	const clientID = "claude-default-canonical-model-list-test"
+	const modelID = "gpt-default-canonical-model-list-test"
+	registryRef := registry.GetGlobalRegistry()
+	registryRef.RegisterClient(clientID, "claude", []*registry.ModelInfo{{
+		ID: modelID, Object: "model", OwnedBy: "test",
+	}})
+	t.Cleanup(func() {
+		registryRef.UnregisterClient(clientID)
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	NewClaudeCodeAPIHandler(&handlers.BaseAPIHandler{}).ClaudeModels(ctx)
+
+	var response struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if errUnmarshal := json.Unmarshal(recorder.Body.Bytes(), &response); errUnmarshal != nil {
+		t.Fatalf("decode response: %v", errUnmarshal)
+	}
+	for _, model := range response.Data {
+		if model.ID == modelID {
+			return
+		}
+	}
+	t.Fatalf("canonical model %q not found in response", modelID)
+}
+
+func TestClaudeModelsResponseCloaksWhenOptedIn(t *testing.T) {
+	const clientID = "claude-opt-in-model-list-cloaking-test"
+	const modelID = "gpt-opt-in-model-list-cloaking-test"
+	registryRef := registry.GetGlobalRegistry()
+	registryRef.RegisterClient(clientID, "claude", []*registry.ModelInfo{{
+		ID: modelID, Object: "model", OwnedBy: "test",
+	}})
+	t.Cleanup(func() {
+		registryRef.UnregisterClient(clientID)
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	baseHandler := &handlers.BaseAPIHandler{Cfg: &sdkconfig.SDKConfig{
+		ClaudeCode: sdkconfig.ClaudeCodeConfig{CloakModelList: true},
+	}}
+	NewClaudeCodeAPIHandler(baseHandler).ClaudeModels(ctx)
+
+	wantID := "claude-fable-5-dd-raw." + modelID
+	var response struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if errUnmarshal := json.Unmarshal(recorder.Body.Bytes(), &response); errUnmarshal != nil {
+		t.Fatalf("decode response: %v", errUnmarshal)
+	}
+	for _, model := range response.Data {
+		if model.ID == wantID {
+			return
+		}
+	}
+	t.Fatalf("cloaked model %q not found in response", wantID)
+}
+
 func TestClaudeModelsResponseDisablesModelListCloaking(t *testing.T) {
 	const clientID = "claude-disable-model-list-cloaking-test"
 	const modelID = "gpt-disable-model-list-cloaking-test"
@@ -61,7 +127,7 @@ func TestClaudeModelsResponseDisablesModelListCloaking(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	baseHandler := &handlers.BaseAPIHandler{Cfg: &sdkconfig.SDKConfig{
-		ClaudeCode: sdkconfig.ClaudeCodeConfig{DisableCloakingModelList: true},
+		ClaudeCode: sdkconfig.ClaudeCodeConfig{CloakModelList: true, DisableCloakingModelList: true},
 	}}
 	NewClaudeCodeAPIHandler(baseHandler).ClaudeModels(ctx)
 
@@ -82,6 +148,13 @@ func TestClaudeModelsResponseDisablesModelListCloaking(t *testing.T) {
 }
 
 func TestRewriteClaudeDDModelInBody(t *testing.T) {
+	const clientID = "claude-rewrite-legacy-known"
+	registry.GetGlobalRegistry().RegisterClient(clientID, "openai", []*registry.ModelInfo{
+		{ID: "gpt-4o", Object: "model", OwnedBy: "openai", Type: "openai"},
+	})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(clientID)
+	})
 	tests := []struct {
 		name      string
 		body      string
@@ -91,6 +164,11 @@ func TestRewriteClaudeDDModelInBody(t *testing.T) {
 			name:      "encoded model is decoded",
 			body:      `{"model":"claude-fable-5-dd-o4-tpg","messages":[]}`,
 			wantModel: "gpt-4o",
+		},
+		{
+			name:      "raw marker grok model is decoded",
+			body:      `{"model":"claude-fable-5-dd-raw.cursor-grok-4.6-xhigh-fast","messages":[]}`,
+			wantModel: "cursor-grok-4.6-xhigh-fast",
 		},
 		{
 			name:      "plain claude model unchanged",

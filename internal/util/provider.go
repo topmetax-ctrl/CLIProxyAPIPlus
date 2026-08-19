@@ -27,9 +27,8 @@ func OpenAICompatibleProviderKey(name string) string {
 }
 
 // GetProviderName determines all AI service providers capable of serving a registered model.
-// It first queries the global model registry to retrieve the providers backing the supplied model name.
-// When the model has not been registered yet, it falls back to legacy string heuristics to infer
-// potential providers.
+// Unknown names return nil so callers can reject the request instead of forwarding
+// garbage IDs to a catch-all provider.
 //
 // Supported providers include (but are not limited to):
 //   - "gemini" for Google's Gemini family
@@ -64,16 +63,6 @@ func GetProviderName(modelName string) []string {
 
 	for _, provider := range registry.GetGlobalRegistry().GetModelProviders(modelName) {
 		appendProvider(provider)
-	}
-
-	if len(providers) > 0 {
-		return providers
-	}
-
-	// Fallback: if cursor provider has registered models, route unknown models to it.
-	// Cursor acts as a universal proxy supporting multiple model families (Claude, GPT, Gemini, etc.).
-	if models := registry.GetGlobalRegistry().GetAvailableModelsByProvider("cursor"); len(models) > 0 {
-		return []string{"cursor"}
 	}
 
 	return providers

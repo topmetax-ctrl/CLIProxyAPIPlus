@@ -1,6 +1,25 @@
 package models
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/tidwall/gjson"
+)
+
+func registerResolveTestModels(t *testing.T) {
+	t.Helper()
+	const clientID = "claude-models-resolve-known"
+	registry.GetGlobalRegistry().RegisterClient(clientID, "test", []*registry.ModelInfo{
+		{ID: "gpt-4o", Object: "model", OwnedBy: "openai", Type: "openai"},
+		{ID: "gemini-2.5-pro", Object: "model", OwnedBy: "google", Type: "gemini"},
+		{ID: "cursor-grok-4.6-xhigh-fast", Object: "model", OwnedBy: "cursor", Type: "cursor"},
+		{ID: "custom-model-x", Object: "model", OwnedBy: "test", Type: "openai"},
+	})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(clientID)
+	})
+}
 
 func TestBuildResponse(t *testing.T) {
 	availableModels := []map[string]any{
@@ -18,7 +37,7 @@ func TestBuildResponse(t *testing.T) {
 
 	wantIDs := []string{
 		"claude-c",
-		"claude-fable-5-dd-o4-tpg",
+		"claude-fable-5-dd-raw.gpt-4o",
 		"claude-b",
 		"claude-z",
 	}
@@ -48,6 +67,22 @@ func TestBuildResponse(t *testing.T) {
 	}
 	if got := availableModels[0]["id"]; got != "claude-z" {
 		t.Fatalf("BuildResponse reordered input: first id = %v", got)
+	}
+}
+
+func TestBuildResponseFillsEmptyDisplayName(t *testing.T) {
+	response := BuildResponse([]map[string]any{
+		{"id": "cursor-grok-4.6-xhigh-fast"},
+	}, false)
+	models, ok := response["data"].([]map[string]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("unexpected data: %#v", response["data"])
+	}
+	if got, _ := models[0]["id"].(string); got != "claude-fable-5-dd-raw.cursor-grok-4.6-xhigh-fast" {
+		t.Fatalf("id = %q", got)
+	}
+	if got, _ := models[0]["display_name"].(string); got != "cursor-grok-4.6-xhigh-fast" {
+		t.Fatalf("display_name = %q, want original id", got)
 	}
 }
 
@@ -89,6 +124,35 @@ func TestBuildResponseEmpty(t *testing.T) {
 	}
 }
 
+func TestRewriteModelField(t *testing.T) {
+	registerResolveTestModels(t)
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"raw marker decoded", `{"model":"claude-fable-5-dd-raw.cursor-grok-4.6-xhigh-fast"}`, "cursor-grok-4.6-xhigh-fast"},
+		{"legacy reversed decoded", `{"model":"claude-fable-5-dd-o4-tpg"}`, "gpt-4o"},
+		{"canonical unchanged", `{"model":"cursor-grok-4.6-xhigh-fast"}`, "cursor-grok-4.6-xhigh-fast"},
+		{"missing model unchanged", `{"messages":[]}`, ""},
+		{"thinking suffix preserved", `{"model":"claude-fable-5-dd-raw.gpt-4o(high)"}`, "gpt-4o(high)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RewriteModelField([]byte(tt.body))
+			if tt.want == "" {
+				if string(got) != tt.body {
+					t.Fatalf("RewriteModelField() = %s, want unchanged %s", got, tt.body)
+				}
+				return
+			}
+			if model := gjson.GetBytes(got, "model").String(); model != tt.want {
+				t.Fatalf("model = %q, want %q; body=%s", model, tt.want, got)
+			}
+		})
+	}
+}
+
 func TestEnsureClaudeModelIDPrefix(t *testing.T) {
 	tests := []struct {
 		name string
@@ -97,10 +161,11 @@ func TestEnsureClaudeModelIDPrefix(t *testing.T) {
 	}{
 		{"empty", "", ""},
 		{"already has claude prefix", "claude-sonnet-4-6", "claude-sonnet-4-6"},
-		{"contains claude mid-string is reversed", "my-claude-custom", "claude-fable-5-dd-motsuc-edualc-ym"},
-		{"uppercase Claude prefix is reversed", "Claude-Opus-4", "claude-fable-5-dd-4-supO-edualC"},
-		{"gpt model is reversed", "gpt-4o", "claude-fable-5-dd-o4-tpg"},
-		{"gemini model is reversed", "gemini-2.5-pro", "claude-fable-5-dd-orp-5.2-inimeg"},
+		{"contains claude mid-string keeps original", "my-claude-custom", "claude-fable-5-dd-raw.my-claude-custom"},
+		{"uppercase Claude prefix keeps original", "Claude-Opus-4", "claude-fable-5-dd-raw.Claude-Opus-4"},
+		{"gpt model keeps original", "gpt-4o", "claude-fable-5-dd-raw.gpt-4o"},
+		{"gemini model keeps original", "gemini-2.5-pro", "claude-fable-5-dd-raw.gemini-2.5-pro"},
+		{"grok stays searchable", "cursor-grok-4.6-xhigh-fast", "claude-fable-5-dd-raw.cursor-grok-4.6-xhigh-fast"},
 	}
 
 	for _, tt := range tests {
@@ -113,6 +178,7 @@ func TestEnsureClaudeModelIDPrefix(t *testing.T) {
 }
 
 func TestResolveClaudeModelIDPrefix(t *testing.T) {
+	registerResolveTestModels(t)
 	tests := []struct {
 		name string
 		id   string
@@ -121,10 +187,14 @@ func TestResolveClaudeModelIDPrefix(t *testing.T) {
 		{"empty", "", ""},
 		{"plain claude id unchanged", "claude-sonnet-4-6", "claude-sonnet-4-6"},
 		{"non encoded id unchanged", "gpt-4o", "gpt-4o"},
-		{"encoded gpt model", "claude-fable-5-dd-o4-tpg", "gpt-4o"},
-		{"encoded gemini model", "claude-fable-5-dd-orp-5.2-inimeg", "gemini-2.5-pro"},
+		{"legacy reversed gpt model", "claude-fable-5-dd-o4-tpg", "gpt-4o"},
+		{"legacy reversed gemini model", "claude-fable-5-dd-orp-5.2-inimeg", "gemini-2.5-pro"},
+		{"legacy unknown payload stays unchanged", "claude-fable-5-dd-special", "claude-fable-5-dd-special"},
+		{"raw marker gpt model", "claude-fable-5-dd-raw.gpt-4o", "gpt-4o"},
+		{"raw marker grok model", "claude-fable-5-dd-raw.cursor-grok-4.6-xhigh-fast", "cursor-grok-4.6-xhigh-fast"},
 		{"empty encoded body unchanged", "claude-fable-5-dd-", "claude-fable-5-dd-"},
-		{"preserves thinking suffix", "claude-fable-5-dd-o4-tpg(high)", "gpt-4o(high)"},
+		{"preserves thinking suffix on legacy", "claude-fable-5-dd-o4-tpg(high)", "gpt-4o(high)"},
+		{"preserves thinking suffix on raw", "claude-fable-5-dd-raw.gpt-4o(high)", "gpt-4o(high)"},
 		{"round trip", EnsureClaudeModelIDPrefix("custom-model-x"), "custom-model-x"},
 	}
 
@@ -132,6 +202,28 @@ func TestResolveClaudeModelIDPrefix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := ResolveClaudeModelIDPrefix(tt.id); got != tt.want {
 				t.Fatalf("ResolveClaudeModelIDPrefix(%q) = %q, want %q", tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEnsureResolveRoundTrip(t *testing.T) {
+	registerResolveTestModels(t)
+	ids := []string{
+		"cursor-grok-4.6-xhigh-fast",
+		"gpt-4o",
+		"gemini-2.5-pro",
+		"custom-model-x",
+		"claude-sonnet-4-6",
+		"model.with.dots",
+		"model-with-hyphens",
+		"gpt-4o(high)",
+		"cursor-grok-4.6-xhigh-fast(xhigh)",
+	}
+	for _, id := range ids {
+		t.Run(id, func(t *testing.T) {
+			if got := ResolveClaudeModelIDPrefix(EnsureClaudeModelIDPrefix(id)); got != id {
+				t.Fatalf("Resolve(Ensure(%q)) = %q, want %q", id, got, id)
 			}
 		})
 	}

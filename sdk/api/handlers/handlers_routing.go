@@ -8,6 +8,7 @@ import (
 
 	"github.com/tidwall/sjson"
 
+	claudemodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/claude/models"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -144,7 +145,10 @@ func (h *BaseAPIHandler) providersForExecution(modelName, originalRequestedModel
 		return []string{forcedProvider}, normalizedModel, nil
 	}
 	if routeDecision.Provider != "" {
-		normalizedModel := originalRequestedModel
+		normalizedModel := strings.TrimSpace(modelName)
+		if normalizedModel == "" {
+			normalizedModel = strings.TrimSpace(originalRequestedModel)
+		}
 		if routeDecision.Model != "" {
 			normalizedModel = routeDecision.Model
 		}
@@ -157,6 +161,7 @@ func (h *BaseAPIHandler) providersForExecution(modelName, originalRequestedModel
 }
 
 func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowImageModel bool) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
+	modelName = claudemodels.ResolveClaudeModelIDPrefix(modelName)
 	resolvedModelName := modelName
 	initialSuffix := thinking.ParseSuffix(modelName)
 	if initialSuffix.ModelName == "auto" {

@@ -25,7 +25,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // ClaudeCodeAPIHandler contains the handlers for Claude API endpoints.
@@ -80,9 +79,6 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 		return
 	}
 
-	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
-	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
-
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	if !streamResult.Exists() || streamResult.Type == gjson.False {
@@ -112,9 +108,6 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 		return
 	}
 
-	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
-	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
-
 	c.Header("Content-Type", "application/json")
 
 	alt := h.GetAlt(c)
@@ -133,19 +126,10 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 	cliCancel()
 }
 
-// rewriteClaudeDDModelInBody decodes model IDs of the form claude-fable-5-dd-<reversed>
-// back into the original model name used for routing and upstream requests.
+// rewriteClaudeDDModelInBody decodes cloaked listing IDs (claude-fable-5-dd-raw.<id>
+// and legacy claude-fable-5-dd-<reversed>) back into the original model name.
 func rewriteClaudeDDModelInBody(rawJSON []byte) []byte {
-	modelName := gjson.GetBytes(rawJSON, "model").String()
-	resolved := claudemodels.ResolveClaudeModelIDPrefix(modelName)
-	if resolved == modelName {
-		return rawJSON
-	}
-	updated, errSet := sjson.SetBytes(rawJSON, "model", resolved)
-	if errSet != nil {
-		return rawJSON
-	}
-	return updated
+	return claudemodels.RewriteModelField(rawJSON)
 }
 
 // ClaudeModels handles the Claude models listing endpoint.
@@ -154,7 +138,7 @@ func rewriteClaudeDDModelInBody(rawJSON []byte) []byte {
 // Parameters:
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeModels(c *gin.Context) {
-	disableCloaking := h.Cfg != nil && h.Cfg.ClaudeCode.DisableCloakingModelList
+	disableCloaking := h.Cfg == nil || !h.Cfg.ClaudeCode.CloakAnthropicListing()
 	c.JSON(http.StatusOK, claudemodels.BuildResponse(h.Models(), disableCloaking))
 }
 

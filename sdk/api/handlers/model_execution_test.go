@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -185,6 +187,40 @@ func newModelExecutionHandler(t *testing.T, model string, executor *modelExecuti
 		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
 	})
 	return NewBaseAPIHandlers(cfg, manager)
+}
+
+func TestExecuteWithAuthManagerDecodesCloakedListingModel(t *testing.T) {
+	const canonical = "cursor-grok-4.6-xhigh-fast"
+	cloaked := "claude-fable-5-dd-raw." + canonical
+	executor := &modelExecutionCaptureExecutor{
+		provider: "cursor",
+		execute: func(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+			return coreexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
+		},
+	}
+	handler := newModelExecutionHandler(t, canonical, executor, &sdkconfig.SDKConfig{})
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai", cloaked, []byte(`{"model":"`+cloaked+`"}`), "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	if string(body) != `{"ok":true}` {
+		t.Fatalf("body = %s, want {\"ok\":true}", body)
+	}
+
+	req, opts := executor.captured()
+	if req.Model != canonical {
+		t.Fatalf("executor model = %q, want %q", req.Model, canonical)
+	}
+	if got := gjson.GetBytes(req.Payload, "model").String(); got != canonical {
+		t.Fatalf("payload model = %q, want %q", got, canonical)
+	}
+	if got := gjson.GetBytes(opts.OriginalRequest, "model").String(); got != canonical {
+		t.Fatalf("original request model = %q, want %q", got, canonical)
+	}
+	if got := opts.Metadata[coreexecutor.RequestedModelMetadataKey]; got != cloaked {
+		t.Fatalf("requested model metadata = %#v, want inbound %q", got, cloaked)
+	}
 }
 
 func TestExecuteModelCarriesEntryAndExitProtocols(t *testing.T) {

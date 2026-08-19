@@ -1723,7 +1723,7 @@ func TestModelsDispatchByAnthropicVersionHeader(t *testing.T) {
 
 	server := newTestServer(t)
 
-	// Anthropic API request (Anthropic-Version header, non-claude-cli User-Agent) -> Claude format.
+	// Anthropic API request (Anthropic-Version header, non-claude-cli User-Agent) -> Claude format, canonical IDs.
 	t.Run("anthropic version header routes to claude format", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 		req.Header.Set("Authorization", "Bearer test-key")
@@ -1752,28 +1752,116 @@ func TestModelsDispatchByAnthropicVersionHeader(t *testing.T) {
 		}
 
 		var claudeModel map[string]any
-		var rewrittenModel map[string]any
+		var canonicalGPT map[string]any
 		for _, m := range resp.Data {
 			id, _ := m["id"].(string)
 			switch id {
 			case "claude-sonnet-4-6":
 				claudeModel = m
-			case "claude-fable-5-dd-o4-tpg":
-				rewrittenModel = m
-			case "gpt-4o", "claude-gpt-4o":
-				t.Fatalf("expected non-claude model id to be rewritten as claude-fable-5-dd-<reversed>, got %q", id)
+			case "gpt-4o":
+				canonicalGPT = m
+			case "claude-gpt-4o", "claude-fable-5-dd-o4-tpg", "claude-fable-5-dd-raw.gpt-4o":
+				t.Fatalf("expected Zed Anthropic listing to keep canonical id, got %q", id)
 			}
 		}
 		if claudeModel == nil {
 			t.Fatalf("expected claude-sonnet-4-6 in response, got %s", rr.Body.String())
 		}
-		if rewrittenModel == nil {
-			t.Fatalf("expected claude-fable-5-dd-o4-tpg in response, got %s", rr.Body.String())
+		if canonicalGPT == nil {
+			t.Fatalf("expected canonical gpt-4o in response, got %s", rr.Body.String())
 		}
 		for _, field := range []string{"max_input_tokens", "max_tokens", "display_name"} {
 			if _, ok := claudeModel[field]; !ok {
 				t.Fatalf("expected Claude model to include %q, got %v", field, claudeModel)
 			}
+		}
+	})
+
+	t.Run("claude-cli user agent stays canonical by default", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "claude-cli/2.1.220 (external, cli)")
+		req.Header.Set("Anthropic-Version", "2023-06-01")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+
+		var resp struct {
+			HasMore *bool            `json:"has_more"`
+			Data    []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to parse response JSON: %v; body=%s", err, rr.Body.String())
+		}
+		if resp.HasMore == nil {
+			t.Fatalf("expected Claude envelope with has_more, got %s", rr.Body.String())
+		}
+
+		var canonicalGPT map[string]any
+		for _, m := range resp.Data {
+			id, _ := m["id"].(string)
+			switch id {
+			case "gpt-4o":
+				canonicalGPT = m
+			case "claude-gpt-4o", "claude-fable-5-dd-o4-tpg", "claude-fable-5-dd-raw.gpt-4o":
+				t.Fatalf("expected default Claude Code listing to keep canonical id, got %q", id)
+			}
+		}
+		if canonicalGPT == nil {
+			t.Fatalf("expected canonical gpt-4o in response, got %s", rr.Body.String())
+		}
+	})
+
+	t.Run("opt-in cloak-model-list cloaks non-claude ids", func(t *testing.T) {
+		updatedCfg := *server.cfg
+		updatedCfg.SDKConfig = server.cfg.SDKConfig
+		updatedCfg.ClaudeCode.CloakModelList = true
+		server.UpdateClients(&updatedCfg)
+		t.Cleanup(func() {
+			resetCfg := *server.cfg
+			resetCfg.SDKConfig = server.cfg.SDKConfig
+			resetCfg.ClaudeCode.CloakModelList = false
+			resetCfg.ClaudeCode.DisableCloakingModelList = false
+			server.UpdateClients(&resetCfg)
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "Zed/1.0")
+		req.Header.Set("Anthropic-Version", "2023-06-01")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+
+		var resp struct {
+			HasMore *bool            `json:"has_more"`
+			Data    []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to parse response JSON: %v; body=%s", err, rr.Body.String())
+		}
+		if resp.HasMore == nil {
+			t.Fatalf("expected Claude envelope with has_more, got %s", rr.Body.String())
+		}
+
+		var rewrittenModel map[string]any
+		for _, m := range resp.Data {
+			id, _ := m["id"].(string)
+			switch id {
+			case "claude-fable-5-dd-raw.gpt-4o":
+				rewrittenModel = m
+			case "gpt-4o", "claude-gpt-4o", "claude-fable-5-dd-o4-tpg":
+				t.Fatalf("expected opted-in listing to cloak non-claude id, got %q", id)
+			}
+		}
+		if rewrittenModel == nil {
+			t.Fatalf("expected claude-fable-5-dd-raw.gpt-4o in response, got %s", rr.Body.String())
 		}
 	})
 
@@ -1807,7 +1895,7 @@ func TestModelsDispatchByAnthropicVersionHeader(t *testing.T) {
 			if id, _ := m["id"].(string); id == "gpt-4o" {
 				foundRawGPT = true
 			}
-			if id, _ := m["id"].(string); id == "claude-gpt-4o" || id == "claude-fable-5-dd-o4-tpg" {
+			if id, _ := m["id"].(string); id == "claude-gpt-4o" || id == "claude-fable-5-dd-o4-tpg" || id == "claude-fable-5-dd-raw.gpt-4o" {
 				t.Fatalf("did not expect Anthropic id rewrite on OpenAI format models, got %v", m)
 			}
 		}
@@ -1833,6 +1921,7 @@ func TestClaudeModelListCloakingConfigHotReload(t *testing.T) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "claude-cli/2.1.220 (external, cli)")
 		req.Header.Set("Anthropic-Version", "2023-06-01")
 
 		recorder := httptest.NewRecorder()
@@ -1857,13 +1946,19 @@ func TestClaudeModelListCloakingConfigHotReload(t *testing.T) {
 		t.Fatalf("model %q not found in response: %s", want, recorder.Body.String())
 	}
 
-	assertModelID(claudemodels.EnsureClaudeModelIDPrefix(modelID))
+	assertModelID(modelID)
 
 	updatedCfg := *server.cfg
 	updatedCfg.SDKConfig = server.cfg.SDKConfig
+	updatedCfg.ClaudeCode.CloakModelList = true
+	server.UpdateClients(&updatedCfg)
+	assertModelID(claudemodels.EnsureClaudeModelIDPrefix(modelID))
+
+	updatedCfg = *server.cfg
+	updatedCfg.SDKConfig = server.cfg.SDKConfig
+	updatedCfg.ClaudeCode.CloakModelList = true
 	updatedCfg.ClaudeCode.DisableCloakingModelList = true
 	server.UpdateClients(&updatedCfg)
-
 	assertModelID(modelID)
 }
 

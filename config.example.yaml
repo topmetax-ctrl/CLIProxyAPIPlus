@@ -176,7 +176,12 @@ disable-claude-cloak-mode: false
 
 # Claude Code compatibility settings.
 claude-code:
-  # When true, return original model IDs in Anthropic model list responses instead of cloaked IDs.
+  # When true, rewrite non-claude IDs in Anthropic /v1/models to
+  # claude-fable-5-dd-raw.<canonical> so Claude Code's picker can show them.
+  # Default false: listing IDs stay canonical (cursor-grok-4.6-xhigh-fast).
+  # Requests always accept both forms; the gateway decodes cloaked IDs internally.
+  cloak-model-list: false
+  # Legacy force-off. When true, listing IDs stay canonical even if cloak-model-list is true.
   disable-cloaking-model-list: false
 
 # disable-image-generation supports: false (default), true, "chat", or "passthrough".

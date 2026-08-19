@@ -587,18 +587,18 @@ func TestHandlerProvidersForExecutionUsesRouterProvider(t *testing.T) {
 	}
 }
 
-func TestHandlerProvidersForExecutionFallsBackToOriginalModel(t *testing.T) {
+func TestHandlerProvidersForExecutionFallsBackToCanonicalModel(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	decision := modelRouteDecision{Provider: "claude"}
-	providers, normalizedModel, errMsg := handler.providersForExecution("ignored-by-router", "original-model", false, decision, modelExecutionOptions{})
+	providers, normalizedModel, errMsg := handler.providersForExecution("canonical-model", "cloaked-inbound", false, decision, modelExecutionOptions{})
 	if errMsg != nil {
 		t.Fatalf("providersForExecution() error = %+v", errMsg)
 	}
 	if fmt.Sprint(providers) != "[claude]" {
 		t.Fatalf("providers = %v, want [claude]", providers)
 	}
-	if normalizedModel != "original-model" {
-		t.Fatalf("normalizedModel = %q, want original-model", normalizedModel)
+	if normalizedModel != "canonical-model" {
+		t.Fatalf("normalizedModel = %q, want canonical-model", normalizedModel)
 	}
 }
 
@@ -631,6 +631,7 @@ func TestHandlerProvidersForExecutionRejectsImageOnlyModelOnProviderRoute(t *tes
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	cases := []struct {
 		name          string
+		modelName     string
 		originalModel string
 		decision      modelRouteDecision
 	}{
@@ -645,14 +646,19 @@ func TestHandlerProvidersForExecutionRejectsImageOnlyModelOnProviderRoute(t *tes
 			decision:      modelRouteDecision{Provider: "claude", Model: "gpt-image-2(auto)"},
 		},
 		{
-			name:          "original-model-thinking-suffix",
-			originalModel: "gpt-image-2(auto)",
+			name:          "canonical-model-thinking-suffix",
+			originalModel: "cloaked-inbound",
 			decision:      modelRouteDecision{Provider: "claude"},
+			modelName:     "gpt-image-2(auto)",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, errMsg := handler.providersForExecution("ignored", tc.originalModel, false, tc.decision, modelExecutionOptions{})
+			modelName := tc.modelName
+			if modelName == "" {
+				modelName = "ignored"
+			}
+			_, _, errMsg := handler.providersForExecution(modelName, tc.originalModel, false, tc.decision, modelExecutionOptions{})
 			if errMsg == nil || errMsg.StatusCode != http.StatusServiceUnavailable {
 				t.Fatalf("providersForExecution() error = %+v, want image-only service unavailable", errMsg)
 			}
