@@ -1,0 +1,134 @@
+diff --git a/internal/auth/cursor/proto/decode.go b/internal/auth/cursor/proto/decode.go
+index f54fc735..6c3a2f1d 100644
+--- a/internal/auth/cursor/proto/decode.go
++++ b/internal/auth/cursor/proto/decode.go
+@@ -60,6 +60,7 @@ type DecodedServerMessage struct {
+ 	McpArgs       map[string][]byte // arg name -> protobuf-encoded value
+ 
+ 	// For rejection context
++	GrepPattern      string
+ 	Path             string
+ 	Command          string
+ 	WorkingDirectory string
+@@ -336,6 +337,8 @@ func decodeExecServerMessage(data []byte, msg *DecodedServerMessage) {
+ 				msg.Path = decodeStringField(val, LA_Path)
+ 			case ESM_GrepArgs:
+ 				msg.Type = ServerMsgExecGrepArgs
++				msg.GrepPattern = decodeStringField(val, 1)
++				msg.Path = decodeStringField(val, 2)
+ 			case ESM_FetchArgs:
+ 				msg.Type = ServerMsgExecFetchArgs
+ 				msg.Url = decodeStringField(val, FA_Url)
+diff --git a/internal/auth/cursor/proto/encode.go b/internal/auth/cursor/proto/encode.go
+index c1346450..d2ab25f2 100644
+--- a/internal/auth/cursor/proto/encode.go
++++ b/internal/auth/cursor/proto/encode.go
+@@ -8,6 +8,7 @@ import (
+ 	"encoding/hex"
+ 	"encoding/json"
+ 	"fmt"
++	"os"
+ 	"sync/atomic"
+ 
+ 	log "github.com/sirupsen/logrus"
+@@ -236,6 +237,8 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
+ 		setMsg(arr, "mcp_tools", mcpTools)
+ 	}
+ 
++	applyAuditExperiments(arr)
++
+ 	// --- AgentClientMessage ---
+ 	acm := newMsg("AgentClientMessage")
+ 	setMsg(acm, "run_request", arr)
+@@ -243,6 +246,33 @@ func EncodeRunRequest(p *RunRequestParams) []byte {
+ 	return marshal(acm)
+ }
+ 
++// applyAuditExperiments is audit-only instrumentation gated behind env vars so a
++// single build can isolate which AgentRunRequest field changes native-tool
++// selection. Not part of the shipped behaviour.
++func applyAuditExperiments(arr *dynamicpb.Message) {
++	if os.Getenv("CURSOR_EXP_MCPFS") != "" {
++		opts := newMsg("McpFileSystemOptions")
++		setBool(opts, "enabled", os.Getenv("CURSOR_EXP_MCPFS") == "1")
++		if dir := os.Getenv("CURSOR_EXP_MCPFS_DIR"); dir != "" {
++			setStr(opts, "workspace_project_dir", dir)
++		}
++		setMsg(arr, "mcp_file_system_options", opts)
++		log.Debugf("cursor-audit: set mcp_file_system_options enabled=%v", os.Getenv("CURSOR_EXP_MCPFS") == "1")
++	}
++	if sp := os.Getenv("CURSOR_EXP_SYSPROMPT"); sp != "" {
++		setStr(arr, "custom_system_prompt", sp)
++		log.Debugf("cursor-audit: set custom_system_prompt len=%d", len(sp))
++	}
++	if h := os.Getenv("CURSOR_EXP_HARNESS"); h != "" {
++		if f := arr.Descriptor().Fields().ByName("harness"); f != nil {
++			arr.Set(f, protoreflect.ValueOfString(h))
++			log.Debugf("cursor-audit: set harness=%q", h)
++		} else {
++			log.Debugf("cursor-audit: harness field absent from bundled descriptor")
++		}
++	}
++}
++
+ // encodeRunRequestWithCheckpoint builds an AgentClientMessage using a raw checkpoint
+ // as conversation_state. The checkpoint bytes are embedded directly without deserialization.
+ func encodeRunRequestWithCheckpoint(p *RunRequestParams) []byte {
+@@ -440,6 +470,7 @@ func EncodeKvSetBlobResult(kvId uint32) []byte {
+ func EncodeExecRequestContextResult(execMsgId uint32, execId string, tools []McpToolDef) []byte {
+ 	// RequestContext with tools
+ 	rc := newMsg("RequestContext")
++	applyAuditRequestContextExperiments(rc)
+ 	if len(tools) > 0 {
+ 		toolsField := field(rc, "tools")
+ 		toolsList := rc.Mutable(toolsField).List()
+@@ -467,6 +498,29 @@ func EncodeExecRequestContextResult(execMsgId uint32, execId string, tools []Mcp
+ 	return encodeExecClientMsg(execMsgId, execId, "request_context_result", rcr)
+ }
+ 
++// applyAuditRequestContextExperiments is audit-only instrumentation (see
++// applyAuditExperiments).
++func applyAuditRequestContextExperiments(rc *dynamicpb.Message) {
++	if os.Getenv("CURSOR_EXP_ENV") != "" {
++		env := newMsg("RequestContextEnv")
++		setStr(env, "os_version", os.Getenv("CURSOR_EXP_ENV_OS"))
++		setStr(env, "shell", os.Getenv("CURSOR_EXP_ENV_SHELL"))
++		setStr(env, "project_folder", os.Getenv("CURSOR_EXP_ENV_PROJECT"))
++		if wp := os.Getenv("CURSOR_EXP_ENV_WORKSPACE"); wp != "" {
++			f := field(env, "workspace_paths")
++			env.Mutable(f).List().Append(protoreflect.ValueOfString(wp))
++		}
++		setMsg(rc, "env", env)
++		log.Debugf("cursor-audit: set RequestContext.env")
++	}
++	if os.Getenv("CURSOR_EXP_RC_MCPFS") != "" {
++		opts := newMsg("McpFileSystemOptions")
++		setBool(opts, "enabled", os.Getenv("CURSOR_EXP_RC_MCPFS") == "1")
++		setMsg(rc, "mcp_file_system_options", opts)
++		log.Debugf("cursor-audit: set RequestContext.mcp_file_system_options")
++	}
++}
++
+ // EncodeExecMcpResult responds with MCP tool result.
+ func EncodeExecMcpResult(execMsgId uint32, execId string, content string, isError bool) []byte {
+ 	textContent := newMsg("McpTextContent")
+diff --git a/internal/runtime/executor/cursor_executor.go b/internal/runtime/executor/cursor_executor.go
+index 3b3495bc..5f853dda 100644
+--- a/internal/runtime/executor/cursor_executor.go
++++ b/internal/runtime/executor/cursor_executor.go
+@@ -1761,6 +1761,7 @@ func processH2SessionFrames(
+ 					armBatchTimer()
+ 
+ 				case cursorproto.ServerMsgExecReadArgs:
++					log.Debugf("cursor-audit: native READ requested path=%q execMsgId=%d", msg.Path, msg.ExecMsgId)
+ 					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecReadRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
+ 				case cursorproto.ServerMsgExecWriteArgs:
+ 					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecWriteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
+@@ -1769,6 +1770,7 @@ func processH2SessionFrames(
+ 				case cursorproto.ServerMsgExecLsArgs:
+ 					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecLsRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
+ 				case cursorproto.ServerMsgExecGrepArgs:
++					log.Debugf("cursor-audit: native GREP requested pattern=%q path=%q execMsgId=%d", msg.GrepPattern, msg.Path, msg.ExecMsgId)
+ 					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecGrepError(msg.ExecMsgId, msg.ExecId, rejectReason), 0))
+ 				case cursorproto.ServerMsgExecShellArgs, cursorproto.ServerMsgExecShellStream:
+ 					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecShellRejected(msg.ExecMsgId, msg.ExecId, msg.Command, msg.WorkingDirectory, rejectReason), 0))

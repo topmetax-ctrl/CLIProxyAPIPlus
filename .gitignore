@@ -27,6 +27,11 @@ objectstore/*
 # Static assets
 static/*
 
+# Raw protocol captures: bodies carry the capturing account's identity
+capture/
+/cliproxy-audit
+/cursorcapture
+
 # Authentication data
 auths/*
 /auths

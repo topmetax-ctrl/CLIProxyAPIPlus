@@ -1469,6 +1469,15 @@ func processH2SessionFrames(
 	onCheckpoint func(data []byte), // called when server sends conversation_checkpoint_update
 ) error {
 	var buf bytes.Buffer
+	// Cursor's AgentService has no client capability negotiation for native exec
+	// tools: the upstream harness always advertises glob/grep/read/write/ls/shell
+	// and the model reaches for them before any MCP tool. Declining with the
+	// protocol's *Rejected results is the sanctioned client response, so the
+	// native-tool attempts below are expected upstream behaviour, not a defect
+	// here. Do not try to suppress them by inventing a capability field, by
+	// synthesising RequestContext.env workspace metadata, or by setting
+	// custom_system_prompt (upstream answers invalid_argument for that one).
+	// See reports/CURSOR_NATIVE_TO_MCP_ROOT_CAUSE.md for the measurements.
 	rejectReason := "Tool not available in this environment. Use the MCP tools provided instead."
 	log.Debugf("cursor: processH2SessionFrames started for streamID=%s, waiting for data...", stream.ID())
 

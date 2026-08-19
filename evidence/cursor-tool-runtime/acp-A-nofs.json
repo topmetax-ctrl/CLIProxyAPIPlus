@@ -1,0 +1,141 @@
+{
+  "label": "ACP-A-nofs",
+  "fs": false,
+  "terminal": false,
+  "initialize": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "loadSession": true,
+        "mcpCapabilities": {
+          "http": true,
+          "sse": true
+        },
+        "promptCapabilities": {
+          "audio": false,
+          "embeddedContext": false,
+          "image": true
+        },
+        "sessionCapabilities": {
+          "list": {}
+        }
+      },
+      "authMethods": [
+        {
+          "id": "cursor_login",
+          "name": "Cursor Login",
+          "description": "Authenticate using existing Cursor login credentials. Run 'agent login' first if not logged in."
+        }
+      ]
+    }
+  },
+  "tool_calls": [
+    {
+      "kind": "search",
+      "title": "Find",
+      "status": "pending"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "in_progress"
+    },
+    {
+      "kind": "search",
+      "title": "Find",
+      "status": "pending"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "in_progress"
+    },
+    {
+      "kind": "search",
+      "title": "Find",
+      "status": "pending"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "in_progress"
+    },
+    {
+      "kind": "search",
+      "title": "Find",
+      "status": "pending"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "in_progress"
+    },
+    {
+      "kind": "search",
+      "title": "Find",
+      "status": "pending"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "in_progress"
+    },
+    {
+      "kind": "other",
+      "title": "MCP: tool",
+      "status": "pending"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "in_progress"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "completed"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "completed"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "completed"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "completed"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "completed"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "completed"
+    },
+    {
+      "kind": "other",
+      "title": "MCP: tool",
+      "status": "pending"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "in_progress"
+    },
+    {
+      "kind": null,
+      "title": null,
+      "status": "completed"
+    }
+  ]
+}

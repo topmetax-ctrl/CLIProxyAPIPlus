@@ -1,0 +1,12 @@
+host: '127.0.0.1'
+port: 8402
+auth-dir: '~/.cli-proxy-api'
+remote-management:
+  allow-remote: false
+  disable-auto-update-panel: true
+api-keys:
+  - 'audit-local-key-1'
+transient-error-cooldown-seconds: 15
+request-log: false
+debug: true
+usage-statistics-enabled: false
