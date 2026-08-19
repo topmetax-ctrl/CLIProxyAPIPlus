@@ -98,6 +98,30 @@ func TestApplyCursorPanelPatchInjectsAPIKeyOverlay(t *testing.T) {
 	}
 }
 
+func TestApplyCursorPanelPatchInjectsQuotaOverlay(t *testing.T) {
+	if !strings.Contains(cursorQuotaOverlayJS, cursorQuotaOverlayMarker) {
+		t.Fatal("embedded quota overlay must carry CURSOR-QUOTA-OVERLAY-V1")
+	}
+	patched := ApplyCursorPanelPatch(miniPanelHTML)
+	if !strings.Contains(patched, cursorQuotaOverlayMarker) {
+		t.Fatalf("panel HTML must receive the quota overlay:\n%s", patched)
+	}
+	if !strings.Contains(patched, `id="cursor-quota-overlay"`) {
+		t.Fatalf("quota overlay script tag missing:\n%s", patched)
+	}
+	if strings.Count(patched, cursorQuotaOverlayMarker) != 1 {
+		t.Fatalf("quota overlay injected more than once")
+	}
+	if !strings.Contains(cursorQuotaOverlayJS, "QuotaPage-module__workbench") ||
+		!strings.Contains(cursorQuotaOverlayJS, "QuotaPage-module__grid") ||
+		!strings.Contains(cursorQuotaOverlayJS, "empty-state") {
+		t.Fatal("quota overlay must mount into the native workbench/grid and hide the empty state")
+	}
+	if !strings.Contains(cursorQuotaOverlayJS, "QuotaHeader-module__") {
+		t.Fatal("quota overlay must refuse to mount inside the quota header")
+	}
+}
+
 func TestApplyCursorPanelPatchOverlayIsIdempotent(t *testing.T) {
 	once := ApplyCursorPanelPatch(miniPanelHTML)
 	twice := ApplyCursorPanelPatch(once)
@@ -105,7 +129,10 @@ func TestApplyCursorPanelPatchOverlayIsIdempotent(t *testing.T) {
 		t.Fatalf("overlay patch must be a no-op on already patched HTML")
 	}
 	if got := strings.Count(once, cursorOverlayMarker); got != 1 {
-		t.Fatalf("expected one overlay marker, found %d", got)
+		t.Fatalf("expected one API-key overlay marker, found %d", got)
+	}
+	if got := strings.Count(once, cursorQuotaOverlayMarker); got != 1 {
+		t.Fatalf("expected one quota overlay marker, found %d", got)
 	}
 }
 
@@ -116,6 +143,9 @@ func TestApplyCursorPanelPatchOverlaySurvivesExistingOAuthTile(t *testing.T) {
 	patched := ApplyCursorPanelPatch(already)
 	if !strings.Contains(patched, cursorOverlayMarker) {
 		t.Fatalf("overlay must inject even when OAuth strings are already present:\n%s", patched)
+	}
+	if !strings.Contains(patched, cursorQuotaOverlayMarker) {
+		t.Fatalf("quota overlay must inject even when OAuth strings are already present:\n%s", patched)
 	}
 }
 

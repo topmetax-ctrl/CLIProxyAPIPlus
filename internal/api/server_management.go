@@ -79,6 +79,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.POST("/reset-quota", s.mgmt.ResetQuota)
 		mgmt.GET("/copilot-quota", s.mgmt.GetCopilotQuota)
+		mgmt.GET("/cursor-quota", s.mgmt.GetCursorQuota)
 
 		mgmt.GET("/api-keys", s.mgmt.GetAPIKeys)
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
@@ -346,9 +347,9 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
-	// Serve with the Cursor OAuth tile and API-key import overlay applied in
-	// memory: the on-disk asset stays byte-identical to the upstream release
-	// so the auto-updater's hash comparison keeps working.
+	// Serve with the Cursor OAuth tile, API-key import overlay, and quota
+	// overlay applied in memory: the on-disk asset stays byte-identical to the
+	// upstream release so the auto-updater's hash comparison keeps working.
 	data, err := managementasset.CursorPatchedManagementHTML(filePath)
 	if err != nil {
 		log.WithError(err).Error("failed to read management control panel asset")

@@ -15,13 +15,19 @@ import (
 // provider, and the on-disk copy is replaced wholesale by the auto-updater.
 // Editing the downloaded file directly therefore does not survive updates and
 // breaks the updater's local-vs-remote hash comparison. Instead the Cursor
-// OAuth login tile, its i18n strings, and the API-key import overlay are
-// injected in memory at serve time, keeping the artifact on disk pristine.
+// OAuth login tile, its i18n strings, the API-key import overlay, and the
+// Cursor quota overlay are injected in memory at serve time, keeping the
+// artifact on disk pristine.
 
 //go:embed cursor_overlay.js
 var cursorOverlayJS string
 
 const cursorOverlayMarker = "CURSOR-OVERLAY-V1"
+
+//go:embed cursor_quota_overlay.js
+var cursorQuotaOverlayJS string
+
+const cursorQuotaOverlayMarker = "CURSOR-QUOTA-OVERLAY-V1"
 
 const cursorPatchMarker = "cursor_oauth_title"
 
@@ -61,7 +67,8 @@ const cursorPanelI18nEnglish = "cursor_oauth_title:`Cursor OAuth`,cursor_oauth_b
 // corresponding piece is skipped with a warning instead of corrupting the asset.
 func ApplyCursorPanelPatch(content string) string {
 	content = applyCursorOAuthTile(content)
-	return applyCursorAPIKeyOverlay(content)
+	content = applyCursorAPIKeyOverlay(content)
+	return applyCursorQuotaOverlay(content)
 }
 
 func applyCursorOAuthTile(content string) string {
@@ -104,14 +111,22 @@ func applyCursorOAuthTile(content string) string {
 }
 
 func applyCursorAPIKeyOverlay(content string) string {
-	if strings.Contains(content, cursorOverlayMarker) {
+	return injectCursorScript(content, "cursor-overlay", cursorOverlayMarker, cursorOverlayJS, "API-key import overlay")
+}
+
+func applyCursorQuotaOverlay(content string) string {
+	return injectCursorScript(content, "cursor-quota-overlay", cursorQuotaOverlayMarker, cursorQuotaOverlayJS, "quota overlay")
+}
+
+func injectCursorScript(content, scriptID, marker, source, label string) string {
+	if strings.Contains(content, marker) {
 		return content
 	}
 	if !strings.Contains(content, `id="root"`) && !strings.Contains(content, `id='root'`) {
 		return content
 	}
-	if strings.Contains(strings.ToLower(cursorOverlayJS), "</script") {
-		log.Warn("cursor panel patch: overlay script contains a closing script tag; refusing to inject")
+	if strings.Contains(strings.ToLower(source), "</script") {
+		log.Warnf("cursor panel patch: %s contains a closing script tag; refusing to inject", label)
 		return content
 	}
 	idx := strings.LastIndex(content, "</body>")
@@ -119,10 +134,10 @@ func applyCursorAPIKeyOverlay(content string) string {
 		idx = strings.LastIndex(content, "</BODY>")
 	}
 	if idx < 0 {
-		log.Warn("cursor panel patch: </body> not found; API-key import overlay not injected")
+		log.Warnf("cursor panel patch: </body> not found; %s not injected", label)
 		return content
 	}
-	snippet := "\n  <script id=\"cursor-overlay\">\n" + cursorOverlayJS + "\n  </script>\n"
+	snippet := "\n  <script id=\"" + scriptID + "\">\n" + source + "\n  </script>\n"
 	return content[:idx] + snippet + content[idx:]
 }
 

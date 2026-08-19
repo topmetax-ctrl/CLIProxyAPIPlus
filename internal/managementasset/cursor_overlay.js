@@ -25,7 +25,8 @@
   var CURSOR_BTN = /Start\s+Cursor\s+Login/i;
   var CURSOR_TITLE = "Cursor OAuth";
   var IMPORT_ID = "cursor-apikey-import";
-  var captured = { token: "", base: "" };
+  var captured = window.__cursorMgmtCapture || { token: "", base: "" };
+  window.__cursorMgmtCapture = captured;
 
   function rememberFromUrl(url) {
     if (!url || typeof url !== "string") return;
@@ -40,27 +41,30 @@
     var m = /bearer\s+(.+)/i.exec(value);
     captured.token = m ? m[1].trim() : value.trim();
   }
-  var origOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (method, url) { rememberFromUrl(url); return origOpen.apply(this, arguments); };
-  var origSet = XMLHttpRequest.prototype.setRequestHeader;
-  XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
-    if (name && String(name).toLowerCase() === "authorization") rememberAuth(value);
-    return origSet.apply(this, arguments);
-  };
-  if (window.fetch) {
-    var origFetch = window.fetch;
-    window.fetch = function (input, init) {
-      try {
-        var url = typeof input === "string" ? input : input && input.url;
-        rememberFromUrl(url);
-        var h = init && init.headers;
-        if (h) {
-          if (typeof h.get === "function") rememberAuth(h.get("authorization"));
-          else if (h.Authorization || h.authorization) rememberAuth(h.Authorization || h.authorization);
-        }
-      } catch (e) {}
-      return origFetch.apply(this, arguments);
+  if (!window.__cursorMgmtHooked) {
+    window.__cursorMgmtHooked = true;
+    var origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) { rememberFromUrl(url); return origOpen.apply(this, arguments); };
+    var origSet = XMLHttpRequest.prototype.setRequestHeader;
+    XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+      if (name && String(name).toLowerCase() === "authorization") rememberAuth(value);
+      return origSet.apply(this, arguments);
     };
+    if (window.fetch) {
+      var origFetch = window.fetch;
+      window.fetch = function (input, init) {
+        try {
+          var url = typeof input === "string" ? input : input && input.url;
+          rememberFromUrl(url);
+          var h = init && init.headers;
+          if (h) {
+            if (typeof h.get === "function") rememberAuth(h.get("authorization"));
+            else if (h.Authorization || h.authorization) rememberAuth(h.Authorization || h.authorization);
+          }
+        } catch (e) {}
+        return origFetch.apply(this, arguments);
+      };
+    }
   }
 
   function base() { return captured.base || window.location.origin + MGMT_MARKER; }
@@ -172,16 +176,27 @@
     }, [header, body]);
     document.body.appendChild(card);
   }
+  function onQuotaPage() {
+    return String(location.hash || "").indexOf("quota") !== -1;
+  }
+  function syncFloating() {
+    var card = document.getElementById("cursor-ov-card");
+    if (!card) return;
+    card.style.display = onQuotaPage() ? "none" : "";
+  }
 
   // ----- bootstrap -----
   var debounce;
-  function tick() { ensureImportUI(); }
+  function tick() { ensureImportUI(); syncFloating(); }
   function schedule() { clearTimeout(debounce); debounce = setTimeout(tick, 200); }
   function start() {
     tick();
     var mo = new MutationObserver(schedule);
     mo.observe(document.body, { childList: true, subtree: true });
-    setTimeout(function () { if (!document.getElementById(IMPORT_ID)) buildFloating(); }, 6000);
+    setTimeout(function () {
+      if (onQuotaPage()) return;
+      if (!document.getElementById(IMPORT_ID)) buildFloating();
+    }, 6000);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
   else start();
