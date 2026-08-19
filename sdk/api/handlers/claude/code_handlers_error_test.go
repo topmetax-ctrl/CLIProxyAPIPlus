@@ -49,7 +49,6 @@ func TestClaudeErrorExtractsClaudeStyleUpstreamJSON(t *testing.T) {
 }
 
 func TestWriteClaudeErrorResponseUsesClaudeEnvelope(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	handler := &ClaudeCodeAPIHandler{}

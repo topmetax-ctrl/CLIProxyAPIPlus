@@ -43,7 +43,6 @@ func TestAmpModule_New(t *testing.T) {
 }
 
 func TestAmpModule_Register_WithUpstream(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	// Fake upstream to ensure URL is valid
@@ -79,7 +78,6 @@ func TestAmpModule_Register_WithUpstream(t *testing.T) {
 }
 
 func TestAmpModule_Register_WithoutUpstream(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	accessManager := sdkaccess.NewManager()
@@ -116,7 +114,6 @@ func TestAmpModule_Register_WithoutUpstream(t *testing.T) {
 }
 
 func TestAmpModule_Register_InvalidUpstream(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	accessManager := sdkaccess.NewManager()
@@ -205,7 +202,6 @@ func TestAmpModule_OnConfigUpdated_NonMultiSourceSecret(t *testing.T) {
 }
 
 func TestAmpModule_AuthMiddleware_Fallback(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	// Create module with no auth middleware
@@ -236,7 +232,6 @@ func TestAmpModule_AuthMiddleware_Fallback(t *testing.T) {
 }
 
 func TestAmpModule_SecretSource_FromConfig(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	upstream := httptest.NewServer(nil)
@@ -276,8 +271,6 @@ func TestAmpModule_SecretSource_FromConfig(t *testing.T) {
 }
 
 func TestAmpModule_ProviderAliasesAlwaysRegistered(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	scenarios := []struct {
 		name      string
 		configURL string

@@ -69,8 +69,6 @@ func TestGetUsageQueueInvalidCountDoesNotPop(t *testing.T) {
 }
 
 func TestGetUsageStatisticsReturnsSnapshot(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	stats := usage.NewRequestStatistics()
 	stats.RestoreSnapshot(usage.StatisticsSnapshot{
 		TotalRequests: 3,
@@ -106,8 +104,6 @@ func TestGetUsageStatisticsReturnsSnapshot(t *testing.T) {
 }
 
 func TestExportUsageStatisticsReturnsVersionedSnapshot(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	stats := usage.NewRequestStatistics()
 	stats.RestoreSnapshot(usage.StatisticsSnapshot{
 		TotalRequests: 5,
@@ -140,8 +136,6 @@ func TestExportUsageStatisticsReturnsVersionedSnapshot(t *testing.T) {
 }
 
 func TestImportUsageStatisticsRestoresSnapshot(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	rec := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(rec)
 	ginCtx.Request = httptest.NewRequest(
@@ -178,8 +172,6 @@ func TestImportUsageStatisticsRestoresSnapshot(t *testing.T) {
 }
 
 func TestImportUsageStatisticsRejectsOversizedBody(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	prevMaxBytes := usageImportMaxBytes
 	usageImportMaxBytes = 8
 	t.Cleanup(func() {

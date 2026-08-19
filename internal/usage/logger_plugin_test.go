@@ -126,7 +126,6 @@ func TestRequestStatisticsUsesStableLoggingContext(t *testing.T) {
 		SetStatisticsEnabled(prevStatsEnabled)
 	})
 
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "http://example.com/v1/chat/completions", nil)

@@ -105,7 +105,6 @@ func TestBuildInteractionsExecutionRequestUsesAgentAuthSelectionModel(t *testing
 }
 
 func TestInteractionsRejectsInvalidJSON(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1beta/interactions", strings.NewReader(`{`))
@@ -122,7 +121,6 @@ func TestInteractionsRejectsInvalidJSON(t *testing.T) {
 }
 
 func TestInteractionsRejectsMissingModelAndAgent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1beta/interactions", strings.NewReader(`{"input":"hi"}`))
@@ -139,7 +137,6 @@ func TestInteractionsRejectsMissingModelAndAgent(t *testing.T) {
 }
 
 func TestInteractionsRejectsBothModelAndAgent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1beta/interactions", strings.NewReader(`{"model":"gemini-3.5-flash","agent":"agents/test-agent","input":"hi"}`))
@@ -156,7 +153,6 @@ func TestInteractionsRejectsBothModelAndAgent(t *testing.T) {
 }
 
 func TestInteractionsRejectsNonBooleanStream(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1beta/interactions", strings.NewReader(`{"model":"gemini-3.5-flash","stream":"true","input":"hi"}`))
@@ -173,7 +169,6 @@ func TestInteractionsRejectsNonBooleanStream(t *testing.T) {
 }
 
 func TestInteractionsAgentUsesNativeInteractionsEndpoint(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	var gotPath string
 	var upstreamBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +226,6 @@ func TestInteractionsAgentUsesNativeInteractionsEndpoint(t *testing.T) {
 }
 
 func TestInteractionsAntigravityModelUsesTranslatorBridge(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	model := "interactions-antigravity-bridge-model"
 	var upstreamBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -301,7 +295,6 @@ func TestInteractionsAntigravityModelUsesTranslatorBridge(t *testing.T) {
 }
 
 func TestForwardInteractionsStreamWrapsBareJSONAsSSEData(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1beta/interactions", strings.NewReader(`{}`))

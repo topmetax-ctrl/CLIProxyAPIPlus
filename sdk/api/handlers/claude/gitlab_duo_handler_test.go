@@ -17,8 +17,6 @@ import (
 )
 
 func TestClaudeMessagesWithGitLabDuoAnthropicGateway(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	var gotPath, gotAuthHeader, gotRealmHeader string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -67,8 +65,6 @@ func TestClaudeMessagesWithGitLabDuoAnthropicGateway(t *testing.T) {
 }
 
 func TestClaudeMessagesStreamWithGitLabDuoAnthropicGateway(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path

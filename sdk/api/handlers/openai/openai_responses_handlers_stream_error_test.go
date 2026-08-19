@@ -18,8 +18,6 @@ import (
 // request-shape failures reach the client. Credential, quota and transport
 // failures end the stream silently so the client retries on its own.
 func TestForwardResponsesStreamExposesOnlyClientErrors(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	tests := []struct {
 		name        string
 		status      int
@@ -91,8 +89,6 @@ func TestForwardResponsesStreamExposesOnlyClientErrors(t *testing.T) {
 }
 
 func TestForwardResponsesStreamUsesResponseFailedForCodex(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	h := NewOpenAIResponsesAPIHandler(base)
 
@@ -128,8 +124,6 @@ func TestForwardResponsesStreamUsesResponseFailedForCodex(t *testing.T) {
 }
 
 func TestForwardResponsesStreamTerminalErrorFollowsPartialOutputSequence(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	h := NewOpenAIResponsesAPIHandler(base)
 	recorder := httptest.NewRecorder()
@@ -168,8 +162,6 @@ func TestForwardResponsesStreamTerminalErrorFollowsPartialOutputSequence(t *test
 }
 
 func TestForwardChatAsResponsesStreamTerminalErrorFollowsConvertedOutputSequence(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	h := NewOpenAIResponsesAPIHandler(base)
 	recorder := httptest.NewRecorder()
@@ -224,8 +216,6 @@ func TestForwardChatAsResponsesStreamTerminalErrorFollowsConvertedOutputSequence
 }
 
 func TestForwardChatAsResponsesStreamUsesResponsesTerminalErrors(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	tests := []struct {
 		name      string
 		status    int

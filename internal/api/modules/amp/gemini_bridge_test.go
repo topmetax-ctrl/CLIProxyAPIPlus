@@ -9,8 +9,6 @@ import (
 )
 
 func TestCreateGeminiBridgeHandler_ActionParameterExtraction(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	tests := []struct {
 		name           string
 		path           string
@@ -73,8 +71,6 @@ func TestCreateGeminiBridgeHandler_ActionParameterExtraction(t *testing.T) {
 }
 
 func TestCreateGeminiBridgeHandler_InvalidPath(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	mockHandler := func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}

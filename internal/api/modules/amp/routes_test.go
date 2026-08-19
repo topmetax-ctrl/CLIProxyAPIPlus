@@ -10,7 +10,6 @@ import (
 )
 
 func TestRegisterManagementRoutes(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	// Create module with proxy for testing
@@ -87,7 +86,6 @@ func TestRegisterManagementRoutes(t *testing.T) {
 }
 
 func TestRegisterManagementRoutes_RootRoutesRequireAuth(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	m := &AmpModule{restrictToLocalhost: false}
@@ -158,7 +156,6 @@ func TestRegisterManagementRoutes_RootRoutesRequireAuth(t *testing.T) {
 }
 
 func TestRegisterProviderAliases_AllProvidersRegistered(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	// Minimal base handler setup (no need to initialize, just check routing)
@@ -210,7 +207,6 @@ func TestRegisterProviderAliases_AllProvidersRegistered(t *testing.T) {
 }
 
 func TestRegisterProviderAliases_DynamicModelsHandler(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	base := &handlers.BaseAPIHandler{}
@@ -236,7 +232,6 @@ func TestRegisterProviderAliases_DynamicModelsHandler(t *testing.T) {
 }
 
 func TestRegisterProviderAliases_V1Routes(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	base := &handlers.BaseAPIHandler{}
@@ -269,7 +264,6 @@ func TestRegisterProviderAliases_V1Routes(t *testing.T) {
 }
 
 func TestRegisterProviderAliases_V1BetaRoutes(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	base := &handlers.BaseAPIHandler{}
@@ -300,7 +294,6 @@ func TestRegisterProviderAliases_V1BetaRoutes(t *testing.T) {
 
 func TestRegisterProviderAliases_NoAuthMiddleware(t *testing.T) {
 	// Test that routes still register even if auth middleware is nil (fallback behavior)
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	base := &handlers.BaseAPIHandler{}
@@ -319,7 +312,6 @@ func TestRegisterProviderAliases_NoAuthMiddleware(t *testing.T) {
 }
 
 func TestLocalhostOnlyMiddleware_PreventsSpoofing(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	// Create module with localhost restriction enabled
@@ -403,7 +395,6 @@ func TestLocalhostOnlyMiddleware_PreventsSpoofing(t *testing.T) {
 }
 
 func TestLocalhostOnlyMiddleware_HotReload(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	// Create module with localhost restriction initially enabled

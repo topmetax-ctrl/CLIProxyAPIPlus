@@ -14,7 +14,6 @@ import (
 )
 
 func TestGetContextWithCancelPropagatesRequestIDFromRequestContext(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	req = req.WithContext(logging.WithRequestID(req.Context(), "req-from-gin"))
@@ -29,7 +28,6 @@ func TestGetContextWithCancelPropagatesRequestIDFromRequestContext(t *testing.T)
 }
 
 func TestGetContextWithCancelFallsBackToGinRequestID(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	logging.SetGinRequestID(ginCtx, "req-from-gin-map")
@@ -43,7 +41,6 @@ func TestGetContextWithCancelFallsBackToGinRequestID(t *testing.T) {
 }
 
 func TestGetContextWithCancelCapturesClientRequestMetadata(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	ginCtx.Request.RemoteAddr = "192.0.2.10:43123"
@@ -80,7 +77,6 @@ func TestRequestExecutionMetadataIncludesExecutionSessionWithoutIdempotencyKey(t
 }
 
 func TestRequestExecutionMetadataIncludesHashedCallerScope(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	ginCtx.Set("userApiKey", "downstream-secret")
@@ -98,8 +94,6 @@ func TestRequestExecutionMetadataIncludesHashedCallerScope(t *testing.T) {
 }
 
 func TestRequestExecutionMetadataTraceCallbackWebsocketDetection(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	t.Run("skips websocket upgrade", func(t *testing.T) {
 		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 		ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)

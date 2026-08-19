@@ -765,24 +765,36 @@ func TestPersistAsyncEarlyReturns(t *testing.T) {
 type errorPersister struct {
 	configCalls int32
 	authCalls   int32
+	cfgDone     chan struct{}
+	authDone    chan struct{}
 }
 
 func (p *errorPersister) PersistConfig(context.Context) error {
 	atomic.AddInt32(&p.configCalls, 1)
+	if p.cfgDone != nil {
+		p.cfgDone <- struct{}{}
+	}
 	return fmt.Errorf("persist config error")
 }
 
 func (p *errorPersister) PersistAuthFiles(context.Context, string, ...string) error {
 	atomic.AddInt32(&p.authCalls, 1)
+	if p.authDone != nil {
+		p.authDone <- struct{}{}
+	}
 	return fmt.Errorf("persist auth error")
 }
 
 func TestPersistAsyncErrorPaths(t *testing.T) {
-	p := &errorPersister{}
+	p := &errorPersister{
+		cfgDone:  make(chan struct{}, 1),
+		authDone: make(chan struct{}, 1),
+	}
 	w := &Watcher{storePersister: p}
 	w.persistConfigAsync()
 	w.persistAuthAsync("msg", "a")
-	time.Sleep(30 * time.Millisecond)
+	waitPersistSignal(t, p.cfgDone, "PersistConfig")
+	waitPersistSignal(t, p.authDone, "PersistAuthFiles")
 	if atomic.LoadInt32(&p.configCalls) != 1 {
 		t.Fatalf("expected PersistConfig to be called once, got %d", p.configCalls)
 	}
@@ -1513,6 +1525,15 @@ func TestNormalizeAuthNil(t *testing.T) {
 	}
 }
 
+func waitPersistSignal(t *testing.T, ch <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
 // stubStore implements coreauth.Store plus watcher-specific persistence helpers.
 type stubStore struct {
 	authDir         string
@@ -1520,6 +1541,8 @@ type stubStore struct {
 	authPersisted   int32
 	lastAuthMessage string
 	lastAuthPaths   []string
+	cfgDone         chan struct{}
+	authDone        chan struct{}
 }
 
 func (s *stubStore) List(context.Context) ([]*coreauth.Auth, error) { return nil, nil }
@@ -1529,12 +1552,18 @@ func (s *stubStore) Save(context.Context, *coreauth.Auth) (string, error) {
 func (s *stubStore) Delete(context.Context, string) error { return nil }
 func (s *stubStore) PersistConfig(context.Context) error {
 	atomic.AddInt32(&s.cfgPersisted, 1)
+	if s.cfgDone != nil {
+		s.cfgDone <- struct{}{}
+	}
 	return nil
 }
 func (s *stubStore) PersistAuthFiles(_ context.Context, message string, paths ...string) error {
 	atomic.AddInt32(&s.authPersisted, 1)
 	s.lastAuthMessage = message
 	s.lastAuthPaths = paths
+	if s.authDone != nil {
+		s.authDone <- struct{}{}
+	}
 	return nil
 }
 func (s *stubStore) AuthDir() string { return s.authDir }
@@ -1559,15 +1588,19 @@ func TestNewWatcherDetectsPersisterAndAuthDir(t *testing.T) {
 }
 
 func TestPersistConfigAndAuthAsyncInvokePersister(t *testing.T) {
+	store := &stubStore{
+		cfgDone:  make(chan struct{}, 1),
+		authDone: make(chan struct{}, 1),
+	}
 	w := &Watcher{
-		storePersister: &stubStore{},
+		storePersister: store,
 	}
 
 	w.persistConfigAsync()
 	w.persistAuthAsync("msg", " a ", "", "b ")
 
-	time.Sleep(30 * time.Millisecond)
-	store := w.storePersister.(*stubStore)
+	waitPersistSignal(t, store.cfgDone, "PersistConfig")
+	waitPersistSignal(t, store.authDone, "PersistAuthFiles")
 	if atomic.LoadInt32(&store.cfgPersisted) != 1 {
 		t.Fatalf("expected PersistConfig to be called once, got %d", store.cfgPersisted)
 	}
@@ -1590,23 +1623,29 @@ func TestScheduleConfigReloadDebounces(t *testing.T) {
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	var reloads int32
+	reloads := make(chan struct{}, 8)
 	w := &Watcher{
-		configPath:     cfgPath,
-		authDir:        authDir,
-		reloadCallback: func(*config.Config) { atomic.AddInt32(&reloads, 1) },
+		configPath: cfgPath,
+		authDir:    authDir,
+		reloadCallback: func(*config.Config) {
+			reloads <- struct{}{}
+		},
 	}
 	w.SetConfig(&config.Config{AuthDir: authDir})
 
 	w.scheduleConfigReload()
 	w.scheduleConfigReload()
 
-	time.Sleep(400 * time.Millisecond)
-
-	if atomic.LoadInt32(&reloads) != 1 {
-		t.Fatalf("expected single debounced reload, got %d", reloads)
+	waitPersistSignal(t, reloads, "debounced config reload")
+	select {
+	case <-reloads:
+		t.Fatal("expected single debounced reload, got a second reload")
+	case <-time.After(configReloadDebounce + 50*time.Millisecond):
 	}
-	if w.lastConfigHash == "" {
+	w.clientsMutex.RLock()
+	hash := w.lastConfigHash
+	w.clientsMutex.RUnlock()
+	if hash == "" {
 		t.Fatal("expected lastConfigHash to be set after reload")
 	}
 }

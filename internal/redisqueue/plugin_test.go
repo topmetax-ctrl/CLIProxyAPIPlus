@@ -372,7 +372,6 @@ func withEnabledQueue(t *testing.T, fn func()) {
 func newTestGinContext(t *testing.T, method, path string, status int) *gin.Context {
 	t.Helper()
 
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	ginCtx.Request = httptest.NewRequest(method, "http://example.com"+path, nil)

@@ -16,7 +16,6 @@ import (
 )
 
 func TestGetCursorQuotaRequiresAuthIndex(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, coreauth.NewManager(nil, nil, nil))
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
@@ -28,7 +27,6 @@ func TestGetCursorQuotaRequiresAuthIndex(t *testing.T) {
 }
 
 func TestGetCursorQuotaRejectsNonCursorProvider(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	manager := coreauth.NewManager(nil, nil, nil)
 	auth := &coreauth.Auth{ID: "claude-1", FileName: "claude.json", Provider: "claude", Metadata: map[string]any{"access_token": "x"}}
 	index := auth.EnsureIndex()
@@ -46,7 +44,6 @@ func TestGetCursorQuotaRejectsNonCursorProvider(t *testing.T) {
 }
 
 func TestGetCursorQuotaReturnsSnapshotWithoutInvalidatingCredential(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	manager := coreauth.NewManager(nil, nil, nil)
 	auth := &coreauth.Auth{
 		ID:       "cursor-1",
@@ -107,7 +104,6 @@ func TestGetCursorQuotaReturnsSnapshotWithoutInvalidatingCredential(t *testing.T
 }
 
 func TestGetCursorQuotaPersistsRefreshedTokens(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	manager := coreauth.NewManager(nil, nil, nil)
 	auth := &coreauth.Auth{
 		ID:       "cursor-refresh",
@@ -154,7 +150,6 @@ func TestGetCursorQuotaPersistsRefreshedTokens(t *testing.T) {
 }
 
 func TestGetCursorQuotaNotFound(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, coreauth.NewManager(nil, nil, nil))
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)

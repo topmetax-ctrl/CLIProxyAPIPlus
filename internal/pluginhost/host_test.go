@@ -1158,12 +1158,17 @@ func TestHostCancellationUnderMutationLockDoesNotInsertLoadedPlugin(t *testing.T
 	h.mu.Unlock()
 	waitForHostTestSignal(t, applyDone, "canceled plugin apply")
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for client.shutdown.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	if got := client.shutdown.Load(); got != 1 {
 		t.Fatalf("late client shutdown calls = %d, want 1", got)
+	}
+	// Cleanup drops the loading token after Shutdown() returns, on a
+	// background goroutine. Wait for that, not just the shutdown count.
+	for (h.PluginLoaded("alpha") || h.PluginBusy("alpha")) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
 	}
 	if h.PluginLoaded("alpha") || h.PluginBusy("alpha") {
 		t.Fatal("canceled load inserted or retained a completed plugin")

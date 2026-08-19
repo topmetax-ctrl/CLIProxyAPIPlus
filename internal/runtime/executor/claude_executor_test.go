@@ -51,7 +51,6 @@ func malformedClaudeTreeSignatureForClaudeExecutorTest() string {
 func newClaudeHeaderTestRequest(t *testing.T, incoming http.Header) *http.Request {
 	t.Helper()
 
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	ginReq := httptest.NewRequest(http.MethodPost, "http://localhost/v1/messages", nil)
@@ -4866,7 +4865,6 @@ func TestResolveClaudeMCPAliasOptions(t *testing.T) {
 		t.Fatal("default caller alias secret is empty")
 	}
 
-	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ginCtx.Set("userApiKey", "downstream-caller-one")
 	callerCtx := context.WithValue(context.Background(), "gin", ginCtx)

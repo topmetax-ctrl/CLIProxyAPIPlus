@@ -19,7 +19,6 @@ import (
 )
 
 func TestWriteErrorResponse_AddonHeadersDisabledByDefault(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
@@ -46,7 +45,6 @@ func TestWriteErrorResponse_AddonHeadersDisabledByDefault(t *testing.T) {
 }
 
 func TestWriteErrorResponseDirectResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -87,7 +85,6 @@ func TestWriteErrorResponseDirectResponse(t *testing.T) {
 }
 
 func TestInternalConcurrencyBusyWritesRetryAfterWithoutPassthrough(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
@@ -109,7 +106,6 @@ func TestInternalConcurrencyBusyWritesRetryAfterWithoutPassthrough(t *testing.T)
 func TestWriteErrorResponseHomeBusyNormalAndStreamHeaders(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		t.Run(map[bool]string{false: "normal", true: "stream"}[stream], func(t *testing.T) {
-			gin.SetMode(gin.TestMode)
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -133,7 +129,6 @@ func TestWriteErrorResponseHomeBusyNormalAndStreamHeaders(t *testing.T) {
 }
 
 func TestWriteErrorResponse_AddonHeadersEnabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
@@ -266,7 +261,6 @@ func TestStatusFromErrorMapsContextStatuses(t *testing.T) {
 }
 
 func TestWriteErrorResponse_ContextCanceledUses499(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)

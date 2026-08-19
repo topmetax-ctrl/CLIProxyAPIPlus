@@ -10,8 +10,6 @@ import (
 )
 
 func TestGinLogrusRecoveryRepanicsErrAbortHandler(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	engine := gin.New()
 	engine.Use(GinLogrusRecovery())
 	engine.GET("/abort", func(c *gin.Context) {
@@ -42,8 +40,6 @@ func TestGinLogrusRecoveryRepanicsErrAbortHandler(t *testing.T) {
 }
 
 func TestGinLogrusRecoveryHandlesRegularPanic(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	engine := gin.New()
 	engine.Use(GinLogrusRecovery())
 	engine.GET("/panic", func(c *gin.Context) {
@@ -121,8 +117,6 @@ func TestIsAIAPIPathIncludesCodexBackend(t *testing.T) {
 }
 
 func TestGinLogrusLoggerAddsRequestIDForCodexBackend(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	engine := gin.New()
 	engine.Use(GinLogrusLogger())
 

@@ -643,7 +643,6 @@ func TestReplaceCodexSpawnAgentModelsNormalizesSectionsAndPreservesInstructions(
 }
 
 func TestCodexClientUserAgentPrefersGinRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	request := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	request.Header.Set("User-Agent", "codex-tui/0.145.0")
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())

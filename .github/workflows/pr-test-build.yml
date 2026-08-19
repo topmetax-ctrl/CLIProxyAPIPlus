@@ -51,4 +51,16 @@ jobs:
       - name: Build
         run: go build ./cmd/server
       - name: Test
-        run: go test ./...
+        env:
+          # Unit tests must not depend on the public internet. httptest/websocket
+          # servers bind to loopback, which stays reachable via NO_PROXY.
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          NO_PROXY: 127.0.0.1,localhost,::1
+        run: go test ./... -count=1 -timeout 20m
+      - name: Test with race detector
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          NO_PROXY: 127.0.0.1,localhost,::1
+        run: go test -race ./... -count=1 -timeout 20m

@@ -1015,7 +1015,6 @@ func TestExecuteStreamWithAuthManager_SelectedAuthCallbackReceivesAuthID(t *test
 		},
 	}, manager)
 
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)

@@ -157,8 +157,6 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 }
 
 func TestDeferredRequestBodyCaptureDoesNotDrainUnreadBody(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	logger := logging.NewFileRequestLogger(false, t.TempDir(), "", 10)
 	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader("remaining-body"))
 	request.ContentLength = -1
@@ -194,8 +192,6 @@ func TestDeferredRequestBodyCaptureDoesNotDrainUnreadBody(t *testing.T) {
 }
 
 func TestRequestLoggingMiddlewareCapturesLargeErrorRequestAndDeferredAPIRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	logsDir := t.TempDir()
 	logger := logging.NewFileRequestLogger(false, logsDir, "", 10)
 	payload := append([]byte(`{"marker":"large-error-body","padding":"`), bytes.Repeat([]byte("x"), int(maxErrorOnlyCapturedRequestBodyBytes))...)
@@ -262,8 +258,6 @@ func TestRequestLoggingMiddlewareCapturesLargeErrorRequestAndDeferredAPIRequest(
 }
 
 func TestAttachRequestLogSourcesUsesLoggerLogsDir(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	logsDir := t.TempDir()
 	logger := logging.NewFileRequestLogger(true, logsDir, "", 0)
 	recorder := httptest.NewRecorder()
@@ -342,8 +336,6 @@ func TestDecodeCapturedRequestBodyForLogWithLimitTruncatesZstdExpansion(t *testi
 }
 
 func TestCaptureRequestInfoDecodesZstdRequestBodyForLog(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	payload := []byte(`{"model":"test-model","stream":true}`)
 	var compressed bytes.Buffer
 	encoder, errNewWriter := zstd.NewWriter(&compressed)

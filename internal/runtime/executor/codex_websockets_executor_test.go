@@ -1759,7 +1759,6 @@ func TestApplyCodexHeadersDoesNotInjectClientOnlyHeadersByDefault(t *testing.T) 
 }
 
 func contextWithGinHeaders(headers map[string]string) context.Context {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/", nil)

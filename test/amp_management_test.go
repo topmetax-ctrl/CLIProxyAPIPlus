@@ -15,7 +15,6 @@ import (
 )
 
 func init() {
-	gin.SetMode(gin.TestMode)
 }
 
 // newAmpTestHandler creates a test handler with default ampcode configuration.

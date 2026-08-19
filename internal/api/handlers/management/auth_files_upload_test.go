@@ -15,8 +15,6 @@ import (
 
 func TestUploadAuthFile_PreservesPriorityAttributes(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
-
 	authDir := t.TempDir()
 	manager := coreauth.NewManager(nil, nil, nil)
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)

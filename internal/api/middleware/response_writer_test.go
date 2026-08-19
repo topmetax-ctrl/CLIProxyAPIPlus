@@ -12,7 +12,6 @@ import (
 )
 
 func TestExtractRequestBodyPrefersOverride(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 
@@ -33,7 +32,6 @@ func TestExtractRequestBodyPrefersOverride(t *testing.T) {
 }
 
 func TestExtractRequestBodySupportsStringOverride(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 
@@ -47,7 +45,6 @@ func TestExtractRequestBodySupportsStringOverride(t *testing.T) {
 }
 
 func TestExtractResponseBodyPrefersOverride(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 
@@ -72,7 +69,6 @@ func TestExtractResponseBodyPrefersOverride(t *testing.T) {
 }
 
 func TestExtractResponseBodySupportsStringOverride(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 
@@ -86,7 +82,6 @@ func TestExtractResponseBodySupportsStringOverride(t *testing.T) {
 }
 
 func TestExtractBodyOverrideClonesBytes(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 
@@ -105,7 +100,6 @@ func TestExtractBodyOverrideClonesBytes(t *testing.T) {
 }
 
 func TestExtractWebsocketTimelineUsesOverride(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 
@@ -122,7 +116,6 @@ func TestExtractWebsocketTimelineUsesOverride(t *testing.T) {
 }
 
 func TestFinalizeStreamingWritesAPIWebsocketTimeline(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 

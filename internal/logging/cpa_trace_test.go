@@ -35,7 +35,6 @@ func TestFormatCPATraceID(t *testing.T) {
 }
 
 func TestCPATraceIDMiddlewareRequiresAuthIndexBeforeResponseCommit(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	engine.Use(CPATraceIDMiddleware())
 	engine.GET("/selected", func(c *gin.Context) {
@@ -87,7 +86,6 @@ func TestCPATraceIDMiddlewareRequiresAuthIndexBeforeResponseCommit(t *testing.T)
 }
 
 func TestCPATraceIDConcurrentSelectionAndResponseCommit(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	engine.Use(CPATraceIDMiddleware())
 	engine.GET("/race", func(c *gin.Context) {

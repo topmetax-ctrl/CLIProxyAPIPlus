@@ -31,7 +31,6 @@ import (
 )
 
 func testContextWithAPIKey(apiKey string) context.Context {
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(rec)
 	ginCtx.Set("userApiKey", apiKey)

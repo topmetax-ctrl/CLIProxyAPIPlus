@@ -13,7 +13,6 @@ import (
 )
 
 func TestRecordAPIRequestClonesDeferredBodyWhenRequestLogDisabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	ctx := context.WithValue(context.Background(), "gin", ginCtx)

@@ -181,7 +181,6 @@ func newInterceptorHandler(t *testing.T, model string, executor *interceptorCapt
 }
 
 func contextWithHeaders(headers http.Header) context.Context {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -197,7 +196,6 @@ func contextWithHeaders(headers http.Header) context.Context {
 // query parameters, mirroring how plain HTTP requests expose inbound query to
 // queryFromContext.
 func contextWithQuery(query url.Values) context.Context {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	target := "/v1/chat/completions"

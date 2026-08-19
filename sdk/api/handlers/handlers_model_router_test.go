@@ -827,7 +827,6 @@ func TestStreamWithPluginExecutorReturnedHeadersImmutableAfterReturn(t *testing.
 }
 
 func TestQueryFromContextNilURLDoesNotPanic(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = &http.Request{Header: make(http.Header)}

@@ -14,7 +14,6 @@ import (
 // TestImportCursorAPIKeyRequiresKey ensures the synchronous import rejects an
 // empty api_key before making any network call.
 func TestImportCursorAPIKeyRequiresKey(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	authDir := filepath.Join(t.TempDir(), "auths")
 	handler := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
 	router := gin.New()

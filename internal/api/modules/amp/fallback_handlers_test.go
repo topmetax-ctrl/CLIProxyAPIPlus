@@ -14,8 +14,6 @@ import (
 )
 
 func TestFallbackHandler_RequestToolCasing_RewritesStreamingResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	reg := registry.GetGlobalRegistry()
 	reg.RegisterClient("test-client-amp-tool-casing", "codex", []*registry.ModelInfo{
 		{ID: "test/gpt-tool-casing", OwnedBy: "openai", Type: "codex"},
@@ -46,8 +44,6 @@ func TestFallbackHandler_RequestToolCasing_RewritesStreamingResponse(t *testing.
 }
 
 func TestFallbackHandler_ModelMapping_PreservesThinkingSuffixAndRewritesResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	reg := registry.GetGlobalRegistry()
 	reg.RegisterClient("test-client-amp-fallback", "codex", []*registry.ModelInfo{
 		{ID: "test/gpt-5.2", OwnedBy: "openai", Type: "codex"},

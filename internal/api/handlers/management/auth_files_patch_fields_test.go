@@ -167,8 +167,6 @@ func TestPatchAuthFileFields_HeadersEmptyMapIsNoop(t *testing.T) {
 
 func TestPatchAuthFileFields_SyncsExcludedModelsAttributes(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
-
 	store := &memoryAuthStore{}
 	manager := coreauth.NewManager(store, nil, nil)
 	record := &coreauth.Auth{
@@ -221,8 +219,6 @@ func TestPatchAuthFileFields_SyncsExcludedModelsAttributes(t *testing.T) {
 
 func TestPatchAuthFileFields_ExcludedModelsAliasReplacesAndClears(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
-
 	store := &memoryAuthStore{}
 	manager := coreauth.NewManager(store, nil, nil)
 	record := &coreauth.Auth{

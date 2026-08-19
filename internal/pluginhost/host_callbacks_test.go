@@ -72,7 +72,6 @@ func TestHostHTTPDoCallbackUsesHostHTTPClient(t *testing.T) {
 }
 
 func TestHostHTTPDoCallbackRestoresRegisteredRequestContext(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx := context.WithValue(context.Background(), "gin", ginCtx)
 

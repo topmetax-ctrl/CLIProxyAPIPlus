@@ -235,8 +235,6 @@ func multipartBody(boundary, sdp, session string) string {
 }
 
 func TestHandlerRewritesLiveCallAndSchedulesOAuth(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	manager := auth.NewManager(nil, &apiKeyFirstSelector{}, nil)
 	responseBody := &trackedResponseBody{Reader: strings.NewReader("v=0\r\na=ice-lite\r\n")}
 	executor := &captureExecutor{responseBody: responseBody}
@@ -384,8 +382,6 @@ func TestProxyURLForAuthPrefersCredentialOverride(t *testing.T) {
 }
 
 func TestHandlerRelaysWebRTCMediaSDP(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	manager := auth.NewManager(nil, nil, nil)
 	executor := &captureExecutor{
 		responseBody: &trackedResponseBody{Reader: strings.NewReader("v=0\r\no=upstream-answer\r\n")},
@@ -486,7 +482,6 @@ func TestHandlerClosesUnretainedMediaSession(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			gin.SetMode(gin.TestMode)
 			manager := auth.NewManager(nil, nil, nil)
 			executor := &captureExecutor{
 				responseBody: &trackedResponseBody{Reader: strings.NewReader("v=0\r\no=upstream-answer\r\n")},
@@ -535,7 +530,6 @@ func TestHandlerClosesUnretainedMediaSession(t *testing.T) {
 }
 
 func TestHandlerReleasesHomeSelectionWhenMediaSetupFails(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	manager := auth.NewManager(nil, nil, nil)
 	manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
 	registry := executionregistry.New()
@@ -565,7 +559,6 @@ func TestHandlerReleasesHomeSelectionWhenMediaSetupFails(t *testing.T) {
 }
 
 func TestHandlerClosesMediaWhenResponseWriteFails(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	manager := auth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(&captureExecutor{
 		responseBody: &trackedResponseBody{Reader: strings.NewReader("v=0\r\no=upstream-answer\r\n")},
@@ -607,7 +600,6 @@ func TestHandlerClosesMediaWhenResponseWriteFails(t *testing.T) {
 }
 
 func TestHandlerRefreshesUnauthorizedHomeSelectionOnce(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	manager := auth.NewManager(nil, nil, nil)
 	manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
 	registry := executionregistry.New()
@@ -641,8 +633,6 @@ func TestHandlerRefreshesUnauthorizedHomeSelectionOnce(t *testing.T) {
 }
 
 func TestHandlerUsesLiveModelForHomeDispatch(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	manager := auth.NewManager(nil, nil, nil)
 	manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
 	dispatcher := &homeDispatcher{}
@@ -688,8 +678,6 @@ func TestHandlerUsesLiveModelForHomeDispatch(t *testing.T) {
 }
 
 func TestHomeLiveSessionExpiryReleasesSelection(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	manager := auth.NewManager(nil, nil, nil)
 	manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
 	registry := executionregistry.New()
@@ -732,8 +720,6 @@ func TestHomeLiveSessionExpiryReleasesSelection(t *testing.T) {
 }
 
 func TestHandleSidebandPinsAuthAndRelaysBidirectionally(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	upstreamHeaders := make(chan http.Header, 1)
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -819,7 +805,6 @@ func TestHandleSidebandPinsAuthAndRelaysBidirectionally(t *testing.T) {
 }
 
 func TestHandleSidebandRefreshesUnauthorizedHomeHandshakeOnce(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	var upstreamCalls atomic.Int32
 	upstreamHeaders := make(chan http.Header, 2)
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

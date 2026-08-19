@@ -108,8 +108,6 @@ func TestRegisterModelsForAuth_KiroFallbackModelsApplyExcludedModels(t *testing.
 
 func TestPatchAuthFileFields_RefreshesModelRegistryImmediately(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
-
 	manager := coreauth.NewManager(nil, nil, nil)
 	service := &Service{
 		cfg:         &config.Config{AuthDir: t.TempDir()},

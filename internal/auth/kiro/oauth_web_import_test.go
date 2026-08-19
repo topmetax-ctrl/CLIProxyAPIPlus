@@ -14,8 +14,6 @@ import (
 )
 
 func TestOAuthWebImportAcceptsRawKiroIDETokenJSON(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	authDir := t.TempDir()
 	handler := NewOAuthWebHandler(&config.Config{AuthDir: authDir})
 	router := gin.New()
@@ -81,8 +79,6 @@ func TestOAuthWebImportAcceptsRawKiroIDETokenJSON(t *testing.T) {
 }
 
 func TestOAuthWebImportLoadsIDCDeviceRegistrationFromClientIDHash(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	cacheDir := filepath.Join(homeDir, ".aws", "sso", "cache")
@@ -133,8 +129,6 @@ func TestOAuthWebImportLoadsIDCDeviceRegistrationFromClientIDHash(t *testing.T) 
 }
 
 func TestOAuthWebImportRejectsIDCClientIDHashWithoutDeviceRegistration(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	t.Setenv("HOME", t.TempDir())
 	handler := NewOAuthWebHandler(&config.Config{AuthDir: t.TempDir()})
 	router := gin.New()
@@ -162,8 +156,6 @@ func TestOAuthWebImportRejectsIDCClientIDHashWithoutDeviceRegistration(t *testin
 }
 
 func TestOAuthWebImportAcceptsPastedKiroIDETokenJSONInRefreshTokenField(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	authDir := t.TempDir()
 	handler := NewOAuthWebHandler(&config.Config{AuthDir: authDir})
 	router := gin.New()
@@ -189,8 +181,6 @@ func TestOAuthWebImportAcceptsPastedKiroIDETokenJSONInRefreshTokenField(t *testi
 }
 
 func TestOAuthWebImportReportsSaveFailure(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	authDirFile := filepath.Join(t.TempDir(), "auth-dir-file")
 	if err := os.WriteFile(authDirFile, []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("failed to create auth dir file: %v", err)
@@ -222,8 +212,6 @@ func TestOAuthWebImportReportsSaveFailure(t *testing.T) {
 }
 
 func TestOAuthWebImportRejectsInvalidBareRefreshToken(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	handler := NewOAuthWebHandler(&config.Config{AuthDir: t.TempDir()})
 	router := gin.New()
 	handler.RegisterRoutes(router)

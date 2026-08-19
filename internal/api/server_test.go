@@ -426,8 +426,6 @@ func newTestServer(t *testing.T) *Server {
 func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 	t.Helper()
 
-	gin.SetMode(gin.TestMode)
-
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
@@ -1352,7 +1350,6 @@ func TestManagementUsageEndpointsRequireManagementAuthAndServePlusContracts(t *t
 }
 
 func TestCorsMiddlewareSkipsManagementRoutes(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(corsMiddleware())
 	router.OPTIONS("/v0/management/config", func(c *gin.Context) {

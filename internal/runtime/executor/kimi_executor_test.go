@@ -208,7 +208,6 @@ func TestKimiExecutorCountTokensInvalidGzipErrorBodyReturnsDecodeMessage(t *test
 }
 
 func TestKimiExecutorClaudeStreamForwardsAnthropicBetaAndLogsUpstream(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages?beta=true", nil)
