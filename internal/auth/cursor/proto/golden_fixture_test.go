@@ -215,10 +215,10 @@ func decodeExecMcpResult(t *testing.T, data []byte) (execID, content string) {
 	}
 	execID = string(fieldBytes(ecm, ECM_ExecId))
 	mcpResult := fieldBytes(ecm, ECM_McpResult)
-	success := fieldBytes(mcpResult, MCR_Success)  // McpResult.success
-	item := fieldBytes(success, MCS_Content)       // McpSuccess.content[0]
-	text := fieldBytes(item, MTRCI_Text)           // item.text (McpTextContent)
-	content = string(fieldBytes(text, MTC_Text))   // McpTextContent.text
+	success := fieldBytes(mcpResult, MCR_Success) // McpResult.success
+	item := fieldBytes(success, MCS_Content)      // McpSuccess.content[0]
+	text := fieldBytes(item, MTRCI_Text)          // item.text (McpTextContent)
+	content = string(fieldBytes(text, MTC_Text))  // McpTextContent.text
 	return execID, content
 }
 
