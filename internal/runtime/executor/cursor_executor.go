@@ -135,6 +135,7 @@ type cursorSession struct {
 	switchOutput   func(ch chan cliproxyexecutor.StreamChunk, outputCtx context.Context) // switch output channel/request context
 	conversationID string
 	owner          *cursorStateOwner
+	usage          *cursorTokenUsage
 }
 
 type pendingMcpExec struct {
@@ -559,7 +560,9 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 		flattenConversationIntoUserText(parsed)
 	}
 	params := buildRunRequestParams(parsed, conversationID, req.Model)
-	dumpCursorRequestFingerprint(parsed, params, resolveCursorContinuity(openAICompatible && len(parsed.ToolResults) > 0, false, parsed), conversationID)
+	continuity := resolveCursorContinuity(openAICompatible && len(parsed.ToolResults) > 0, false, parsed)
+	audit := newCursorAudit(conversationID, sessionID, req.Model, continuity)
+	dumpCursorRequestFingerprint(parsed, params, continuity, conversationID, audit)
 
 	requestBytes := cursorproto.EncodeRunRequest(params)
 	framedRequest := cursorproto.FrameConnectMessage(requestBytes, 0)
@@ -572,11 +575,7 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 		return resp, fmt.Errorf("cursor: failed to send request: %w", err)
 	}
 
-	sessionCtx, sessionCancel := context.WithCancel(contextWithCursorAudit(ctx, cursorAuditMeta{
-		ConversationID: conversationID,
-		Model:          req.Model,
-		Continuity:     resolveCursorContinuity(openAICompatible && len(parsed.ToolResults) > 0, false, parsed),
-	}))
+	sessionCtx, sessionCancel := context.WithCancel(contextWithCursorAudit(ctx, audit))
 	defer sessionCancel()
 	go cursorH2Heartbeat(sessionCtx, stream)
 
@@ -584,6 +583,7 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 	var thinkingText strings.Builder
 	var toolCalls []pendingMcpExec
 	usage := &cursorTokenUsage{}
+	usage.bindAudit(audit)
 	usage.setInputEstimate(len(payload))
 	var onToolBatch func([]pendingMcpExec)
 	if openAICompatible {
@@ -604,6 +604,8 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 		usage,
 		nil,
 	); streamErr != nil {
+		class, reason, expected := classifyCursorTerminal(usage, "error", streamErr)
+		dumpCursorUsageSettled(audit, usage, "error", class, reason, expected, streamErr)
 		return resp, classifyCursorError(fmt.Errorf("cursor: stream error: %w", streamErr))
 	}
 
@@ -630,6 +632,8 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 		}
 		message["tool_calls"] = serialized
 	}
+	class, reason, expected := classifyCursorTerminal(usage, finishReason, nil)
+	dumpCursorUsageSettled(audit, usage, finishReason, class, reason, expected, nil)
 	reporter.Publish(ctx, usage.detail())
 	body := map[string]any{
 		"id":      "chatcmpl-" + uuid.New().String()[:28],
@@ -660,7 +664,9 @@ func isOpenAICompatibleSourceFormat(format sdktranslator.Format) bool {
 }
 
 type cursorAuditMeta struct {
+	AuditID        string
 	ConversationID string
+	SessionID      string
 	Model          string
 	Continuity     string
 }
@@ -684,6 +690,11 @@ func observeTurnEnded(ctx context.Context, msg *cursorproto.DecodedServerMessage
 		return
 	}
 	meta := cursorAuditFromContext(ctx)
+	if usage != nil {
+		if bound := usage.auditCopy(); bound.AuditID != "" {
+			meta = bound
+		}
+	}
 	term := msg.TurnEndedUsage
 	if !term.HasAny() && len(msg.TurnEndedRaw) > 0 {
 		term = cursorproto.DecodeTurnEndedUsage(msg.TurnEndedRaw, msg.TurnEndedFields)
@@ -692,10 +703,12 @@ func observeTurnEnded(ctx context.Context, msg *cursorproto.DecodedServerMessage
 	if usage != nil {
 		settled = usage.settleTurnEnded(term)
 	}
-	log.Debugf("cursor: TurnEnded received conv=%s model=%s continuity=%s usage_source=cursor_turn_ended settled=%t %s hex=%s",
-		meta.ConversationID, meta.Model, meta.Continuity, settled, term.DebugSummary(), hex.EncodeToString(msg.TurnEndedRaw))
+	log.Debugf("cursor: TurnEnded received audit=%s conv=%s model=%s continuity=%s usage_source=cursor_turn_ended settled=%t %s hex=%s",
+		cursorproto.ConversationShort(meta.AuditID), meta.ConversationID, meta.Model, meta.Continuity, settled, term.DebugSummary(), hex.EncodeToString(msg.TurnEndedRaw))
 	dumpExtra := map[string]string{
+		"audit_id":        meta.AuditID,
 		"conversation_id": cursorproto.ConversationShort(meta.ConversationID),
+		"session_id":      meta.SessionID,
 		"model":           meta.Model,
 		"continuity":      meta.Continuity,
 		"outer_field":     strconv.Itoa(cursorproto.IU_TurnEnded),
@@ -719,7 +732,7 @@ func observeTurnEnded(ctx context.Context, msg *cursorproto.DecodedServerMessage
 	cursorproto.MaybeDumpWire("turn_ended", dumpExtra, msg.TurnEndedRaw, msg.TurnEndedFields)
 }
 
-func dumpCursorRequestFingerprint(parsed *parsedOpenAIRequest, params *cursorproto.RunRequestParams, continuity, conversationID string) {
+func dumpCursorRequestFingerprint(parsed *parsedOpenAIRequest, params *cursorproto.RunRequestParams, continuity, conversationID string, audit cursorAuditMeta) {
 	dir := strings.TrimSpace(os.Getenv("CURSOR_WIRE_DUMP_DIR"))
 	if dir == "" || params == nil || parsed == nil {
 		return
@@ -728,23 +741,34 @@ func dumpCursorRequestFingerprint(parsed *parsedOpenAIRequest, params *cursorpro
 		return
 	}
 	tools := make([]string, 0, len(params.McpTools))
+	toolNames := make([]string, 0, len(params.McpTools))
 	for _, tool := range params.McpTools {
 		tools = append(tools, tool.Name+"\n"+string(tool.InputSchema))
+		toolNames = append(toolNames, tool.Name)
+	}
+	userPreview := params.UserText
+	if len(userPreview) > 160 {
+		userPreview = userPreview[:160]
 	}
 	payload := map[string]any{
 		"event_type":            "request_fingerprint",
 		"timestamp":             time.Now().UTC().Format(time.RFC3339Nano),
+		"audit_id":              audit.AuditID,
 		"conversation_id":       cursorproto.ConversationShort(conversationID),
+		"session_id":            audit.SessionID,
 		"model":                 params.ModelId,
 		"continuity":            continuity,
 		"has_raw_checkpoint":    len(params.RawCheckpoint) > 0,
 		"checkpoint_bytes":      len(params.RawCheckpoint),
+		"checkpoint_sha256":     sha256Hex(params.RawCheckpoint),
 		"system_sha256":         sha256Hex([]byte(params.SystemPrompt)),
 		"user_text_sha256":      sha256Hex([]byte(params.UserText)),
 		"tools_sha256":          sha256Hex([]byte(strings.Join(tools, "\n"))),
+		"tool_names":            toolNames,
 		"history_prefix_sha256": sha256Hex([]byte(strings.TrimSpace(parsed.UserText) + "\n" + params.UserText)),
 		"system_bytes":          len(params.SystemPrompt),
 		"user_text_bytes":       len(params.UserText),
+		"user_text_preview":     userPreview,
 		"tool_count":            len(params.McpTools),
 		"turn_count":            len(params.Turns),
 		"message_id_present":    params.MessageId != "",
@@ -754,7 +778,10 @@ func dumpCursorRequestFingerprint(parsed *parsedOpenAIRequest, params *cursorpro
 	if err != nil {
 		return
 	}
-	name := fmt.Sprintf("%s-%s-fingerprint.json", time.Now().UTC().Format("150405.000"), cursorproto.ConversationShort(conversationID))
+	name := fmt.Sprintf("%s-%s-fingerprint.json", time.Now().UTC().Format("150405.000"), cursorproto.ConversationShort(audit.AuditID))
+	if audit.AuditID == "" {
+		name = fmt.Sprintf("%s-%s-fingerprint.json", time.Now().UTC().Format("150405.000"), cursorproto.ConversationShort(conversationID))
+	}
 	_ = os.WriteFile(filepath.Join(dir, name), append(b, '\n'), 0o644)
 }
 
@@ -871,7 +898,8 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 	checkpointKey := conversationId
 	needsTranslate := from.String() != "" && from.String() != "openai"
 
-	if coldToolContinuation {
+	contMode := continuationModeFromOptions(opts)
+	if coldToolContinuation && contMode != "warm" {
 		e.retireConversationState(conversationId)
 		log.Infof("cursor: using cold continuation for %d tool result(s)", len(parsed.ToolResults))
 	}
@@ -898,7 +926,7 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 
 		if hasSession && session.stream != nil && session.authID == authID {
 			log.Debugf("cursor: resuming session %s with %d tool results", sessionKey, len(parsed.ToolResults))
-			result, errResume := e.resumeWithToolResults(ctx, sessionKey, session, parsed, from, to, req, originalPayload, payload, needsTranslate)
+			result, errResume := e.resumeWithToolResults(ctx, sessionKey, session, parsed, from, to, req, originalPayload, payload, needsTranslate, sessionID, req.Model)
 			if errResume == nil {
 				// The parked worker goroutine owns the token totals for this
 				// conversation; count the resume request itself here.
@@ -941,13 +969,27 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 	e.mu.Unlock()
 
 	params := buildRunRequestParams(parsed, conversationId, req.Model)
-
-	if coldToolContinuation {
+	sameAuthCheckpoint := hasCheckpoint && saved != nil && saved.data != nil && saved.authID == authID
+	useCheckpoint, flatten, continuity := planCursorContinuation(contMode, coldToolContinuation, sameAuthCheckpoint, true, len(parsed.Turns) > 0)
+	if hasCheckpoint && saved != nil && saved.data != nil && saved.authID != authID && contMode != "cold" && !coldToolContinuation {
+		log.Infof("cursor: auth migrated (%s → %s) for conv=%s, discarding checkpoint and flattening context", saved.authID, authID, checkpointKey)
+		e.mu.Lock()
+		delete(e.checkpoints, checkpointKey)
+		e.mu.Unlock()
+		useCheckpoint = false
+		flatten = len(parsed.Turns) > 0
+		continuity = resolveCursorContinuity(false, false, parsed)
+	}
+	if flatten {
+		if coldToolContinuation {
+			log.Debugf("cursor: flattening cold tool continuation for conv=%s", conversationId)
+		} else if !useCheckpoint {
+			log.Debugf("cursor: flattening continuation mode=%s turns=%d conv=%s", contMode, len(parsed.Turns), conversationId)
+		}
 		flattenConversationIntoUserText(parsed)
 		params = buildRunRequestParams(parsed, conversationId, req.Model)
-	} else if hasCheckpoint && saved.data != nil && saved.authID == authID {
-		// Same auth — use checkpoint normally.
-		log.Debugf("cursor: using saved checkpoint (%d bytes) for conv=%s auth=%s", len(saved.data), checkpointKey, authID)
+	} else if useCheckpoint {
+		log.Debugf("cursor: using saved checkpoint (%d bytes) for conv=%s auth=%s mode=%s", len(saved.data), checkpointKey, authID, contMode)
 		params.RawCheckpoint = saved.data
 		if params.BlobStore == nil {
 			params.BlobStore = make(map[string][]byte)
@@ -957,24 +999,9 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 				params.BlobStore[key] = value
 			}
 		}
-	} else if hasCheckpoint && saved.data != nil && saved.authID != authID {
-		// Auth changed (quota failover) — checkpoints are not portable.
-		log.Infof("cursor: auth migrated (%s → %s) for conv=%s, discarding checkpoint and flattening context", saved.authID, authID, checkpointKey)
-		e.mu.Lock()
-		delete(e.checkpoints, checkpointKey)
-		e.mu.Unlock()
-		if len(parsed.Turns) > 0 {
-			flattenConversationIntoUserText(parsed)
-			params = buildRunRequestParams(parsed, conversationId, req.Model)
-		}
-	} else if len(parsed.Turns) > 0 {
-		// Cursor reliably reads UserText, while structured turns may be ignored.
-		log.Debugf("cursor: no checkpoint, flattening %d turns into user text", len(parsed.Turns))
-		flattenConversationIntoUserText(parsed)
-		params = buildRunRequestParams(parsed, conversationId, req.Model)
 	}
-	continuity := resolveCursorContinuity(coldToolContinuation, hasCheckpoint && saved != nil && saved.data != nil && saved.authID == authID, parsed)
-	dumpCursorRequestFingerprint(parsed, params, continuity, conversationId)
+	audit := newCursorAudit(conversationId, sessionID, req.Model, continuity)
+	dumpCursorRequestFingerprint(parsed, params, continuity, conversationId, audit)
 	requestBytes := cursorproto.EncodeRunRequest(params)
 	framedRequest := cursorproto.FrameConnectMessage(requestBytes, 0)
 
@@ -993,11 +1020,7 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 	if openAICompatible {
 		sessionParent = ctx
 	}
-	sessionCtx, sessionCancel := context.WithCancel(contextWithCursorAudit(sessionParent, cursorAuditMeta{
-		ConversationID: conversationId,
-		Model:          req.Model,
-		Continuity:     continuity,
-	}))
+	sessionCtx, sessionCancel := context.WithCancel(contextWithCursorAudit(sessionParent, audit))
 	if !e.attachConversationStream(conversationId, streamOwner, sessionCancel, stream) {
 		sessionCancel()
 		stream.Close()
@@ -1109,6 +1132,7 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		toolCallIndex := 0
 		openAIToolCallsEmitted := false
 		usage := &cursorTokenUsage{}
+		usage.bindAudit(audit)
 		usage.setInputEstimate(len(payload))
 
 		emitTextDelta := func(text string, isThinking bool) {
@@ -1173,6 +1197,8 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 				resumeOut := make(chan cliproxyexecutor.StreamChunk, 64)
 				log.Debugf("cursor: saving session %s for MCP tool resume (%d pending call(s))", sessionKey, len(execs))
 				outMu.Lock()
+				parkClass, parkReason, parkExpected := classifyCursorTerminal(usage, "tool_calls", nil)
+				dumpCursorUsageSettled(usage.auditCopy(), usage, "tool_calls", parkClass, parkReason, parkExpected, nil)
 				session := &cursorSession{
 					stream:       stream,
 					blobStore:    params.BlobStore,
@@ -1183,6 +1209,7 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 					authID:       authID,
 					toolResultCh: toolResultCh, // reuse same channel across rounds
 					resumeOutCh:  resumeOut,
+					usage:        usage,
 					switchOutput: func(ch chan cliproxyexecutor.StreamChunk, outputCtx context.Context) {
 						outMu.Lock()
 						currentOut = ch
@@ -1234,6 +1261,11 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		// processH2SessionFrames returned — stream is done.
 		// Check if error happened before any chunks were emitted.
 		if streamErr != nil {
+			finish := "error"
+			if errors.Is(streamErr, context.Canceled) {
+				finish = "cancel"
+			}
+			publishCursorUsageSettlement(usage, finish, streamErr)
 			if outputStarted.Load() {
 				// Partial output must never be presented as a successful stop.
 				log.Warnf("cursor: stream error after data sent (auth=%s conv=%s): %v", authID, conversationId, streamErr)
@@ -1259,6 +1291,7 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		if openAICompatible && openAIToolCallsEmitted {
 			sendChunkSwitchable(`{}`, `"tool_calls"`)
 			sendDoneSwitchable()
+			publishCursorUsageSettlement(usage, "tool_calls", nil)
 			reporter.Publish(ctx, usage.detail())
 			closeCurrentOutput()
 			sessionCancel()
@@ -1268,6 +1301,11 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 
 		// Include token usage in the final stop chunk. Terminal TurnEnded
 		// usage wins over TokenDelta and the payload-size heuristic.
+		finish := "stop"
+		if !usage.hasTerminal() {
+			finish = "eof"
+		}
+		publishCursorUsageSettlement(usage, finish, nil)
 		reporter.Publish(ctx, usage.detail())
 		usageJSON, err := json.Marshal(usage.openAIUsage())
 		if err != nil {
@@ -1329,8 +1367,17 @@ func (e *CursorExecutor) resumeWithToolResults(
 	req cliproxyexecutor.Request,
 	originalPayload, payload []byte,
 	needsTranslate bool,
+	sessionID, model string,
 ) (*cliproxyexecutor.StreamResult, error) {
 	log.Debugf("cursor: resumeWithToolResults: injecting %d tool results via channel", len(parsed.ToolResults))
+	resumeAudit := newCursorAudit(session.conversationID, sessionID, model, "park_restore")
+	if session.usage != nil {
+		session.usage.bindAudit(resumeAudit)
+	}
+	if parsed != nil {
+		params := buildRunRequestParams(parsed, session.conversationID, model)
+		dumpCursorRequestFingerprint(parsed, params, "park_restore", session.conversationID, resumeAudit)
+	}
 
 	closeSession := func() {
 		if session.cancel != nil {
@@ -1593,6 +1640,38 @@ type cursorTokenUsage struct {
 	inputTokensEst int64 // estimated from request payload size
 	terminal       cursorproto.TurnEndedUsage
 	terminalSeen   bool
+	audit          cursorAuditMeta
+}
+
+func (u *cursorTokenUsage) bindAudit(meta cursorAuditMeta) {
+	if u == nil {
+		return
+	}
+	u.mu.Lock()
+	u.audit = meta
+	u.mu.Unlock()
+}
+
+func (u *cursorTokenUsage) auditCopy() cursorAuditMeta {
+	if u == nil {
+		return cursorAuditMeta{}
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.audit
+}
+
+func (u *cursorTokenUsage) hasTerminal() bool {
+	if u == nil {
+		return false
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.terminalSeen
+}
+
+func (u *cursorTokenUsage) cacheReadExceedsInputLocked() bool {
+	return u.terminalSeen && u.terminal.HasInput && u.terminal.HasCacheRead && u.terminal.CacheReadTokens > u.terminal.InputTokens
 }
 
 func (u *cursorTokenUsage) addOutput(delta int64) {
@@ -1674,16 +1753,19 @@ func (u *cursorTokenUsage) openAIUsage() map[string]any {
 	if !u.terminalSeen {
 		return usage
 	}
-	if u.terminal.HasCacheRead {
-		promptDetails := map[string]any{"cached_tokens": u.terminal.CacheReadTokens}
-		if u.terminal.HasCacheWrite && u.terminal.CacheWriteTokens > 0 {
+	if u.cacheReadExceedsInputLocked() {
+		log.Warnf("cursor: protocol anomaly cache_read_tokens=%d > input_tokens=%d usage_source=cursor_turn_ended; preserving raw terminal values",
+			u.terminal.CacheReadTokens, u.terminal.InputTokens)
+	}
+	if u.terminal.HasCacheRead || u.terminal.HasCacheWrite {
+		promptDetails := map[string]any{}
+		if u.terminal.HasCacheRead {
+			promptDetails["cached_tokens"] = u.terminal.CacheReadTokens
+		}
+		if u.terminal.HasCacheWrite {
 			promptDetails["cache_write_tokens"] = u.terminal.CacheWriteTokens
 		}
 		usage["prompt_tokens_details"] = promptDetails
-	} else if u.terminal.HasCacheWrite && u.terminal.CacheWriteTokens > 0 {
-		usage["prompt_tokens_details"] = map[string]any{
-			"cache_write_tokens": u.terminal.CacheWriteTokens,
-		}
 	}
 	if u.terminal.HasReasoning {
 		usage["completion_tokens_details"] = map[string]any{

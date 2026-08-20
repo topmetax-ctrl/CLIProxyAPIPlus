@@ -43,6 +43,12 @@ func (u TurnEndedUsage) HasAny() bool {
 	return u.HasInput || u.HasOutput || u.HasCacheRead || u.HasCacheWrite || u.HasReasoning || len(u.Unknown) > 0
 }
 
+// CacheReadExceedsInput reports a protocol anomaly. Callers must keep raw
+// values and must not invent a corrected input or wrap unsigned.
+func (u TurnEndedUsage) CacheReadExceedsInput() bool {
+	return u.HasInput && u.HasCacheRead && u.CacheReadTokens > u.InputTokens
+}
+
 // DecodeTurnEndedUsage maps inspected TurnEndedUpdate fields onto the
 // Cursor.app schema. Unknown field numbers are preserved, not renamed.
 func DecodeTurnEndedUsage(raw []byte, fields []WireField) TurnEndedUsage {

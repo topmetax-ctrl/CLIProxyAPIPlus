@@ -71,8 +71,8 @@ func TestCursorTokenUsageTerminalBeatsHeuristic(t *testing.T) {
 	if details == nil || details["cached_tokens"] != int64(11392) {
 		t.Fatalf("cached_tokens missing: %v", usage)
 	}
-	if _, ok := details["cache_write_tokens"]; ok {
-		t.Fatalf("cache_write=0 must not be emitted: %v", details)
+	if details["cache_write_tokens"] != int64(0) {
+		t.Fatalf("present cache_write=0 must be emitted as known zero: %v", details)
 	}
 	comp, _ := usage["completion_tokens_details"].(map[string]any)
 	if comp == nil || comp["reasoning_tokens"] != int64(18) {
@@ -95,6 +95,58 @@ func TestCursorTokenUsageWithoutTerminalKeepsOldShape(t *testing.T) {
 	}
 	if usage["prompt_tokens"] != int64(10) || usage["completion_tokens"] != int64(3) {
 		t.Fatalf("usage=%v", usage)
+	}
+}
+
+func TestCursorTokenUsageHeuristicCannotOverwriteTerminal(t *testing.T) {
+	u := &cursorTokenUsage{}
+	if !u.settleTurnEnded(liveCacheHitUsage()) {
+		t.Fatal("settle")
+	}
+	u.setInputEstimate(400000)
+	u.addOutput(999)
+	in, out := u.get()
+	if in != 11490 || out != 22 {
+		t.Fatalf("heuristic overwrote terminal: (%d,%d)", in, out)
+	}
+}
+
+func TestCursorTokenUsageAbsentVsZeroCacheRead(t *testing.T) {
+	absent := &cursorTokenUsage{}
+	absent.settleTurnEnded(cursorproto.TurnEndedUsage{HasInput: true, InputTokens: 10, HasOutput: true, OutputTokens: 1})
+	if _, ok := absent.openAIUsage()["prompt_tokens_details"]; ok {
+		t.Fatalf("absent cache_read must omit prompt_tokens_details: %v", absent.openAIUsage())
+	}
+
+	zero := &cursorTokenUsage{}
+	zero.settleTurnEnded(cursorproto.TurnEndedUsage{
+		HasInput: true, InputTokens: 10,
+		HasOutput: true, OutputTokens: 1,
+		HasCacheRead: true, CacheReadTokens: 0,
+	})
+	details, _ := zero.openAIUsage()["prompt_tokens_details"].(map[string]any)
+	if details == nil || details["cached_tokens"] != int64(0) {
+		t.Fatalf("present zero cache_read must be emitted: %v", zero.openAIUsage())
+	}
+}
+
+func TestCursorTokenUsageCacheReadExceedsInputKeepsRaw(t *testing.T) {
+	u := &cursorTokenUsage{}
+	u.settleTurnEnded(cursorproto.TurnEndedUsage{
+		HasInput: true, InputTokens: 10,
+		HasOutput: true, OutputTokens: 1,
+		HasCacheRead: true, CacheReadTokens: 99,
+	})
+	if !u.terminal.CacheReadExceedsInput() {
+		t.Fatal("expected anomaly")
+	}
+	usage := u.openAIUsage()
+	if usage["prompt_tokens"] != int64(10) {
+		t.Fatalf("must preserve raw input, got %v", usage["prompt_tokens"])
+	}
+	details, _ := usage["prompt_tokens_details"].(map[string]any)
+	if details["cached_tokens"] != int64(99) {
+		t.Fatalf("must preserve raw cache_read, got %v", details)
 	}
 }
 

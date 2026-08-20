@@ -14,6 +14,7 @@ import (
 
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -334,15 +335,20 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 	if param.FinishReason != "" && !param.MessageDeltaSent {
 		usage := root.Get("usage")
 		var inputTokens, outputTokens, cachedTokens int64
+		var hasCached bool
 		if usage.Exists() && usage.Type != gjson.Null {
-			inputTokens, outputTokens, cachedTokens = extractOpenAIUsage(usage)
+			view := extractOpenAIUsage(usage)
+			inputTokens, outputTokens, cachedTokens, hasCached = view.Input, view.Output, view.Cached, view.HasCached
 			// Send message_delta with usage
 			messageDeltaJSON := []byte(`{"type":"message_delta","delta":{"stop_reason":"","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}`)
 			messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "delta.stop_reason", mapOpenAIFinishReasonToAnthropic(effectiveOpenAIFinishReason(param)))
 			messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "usage.input_tokens", inputTokens)
 			messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "usage.output_tokens", outputTokens)
-			if cachedTokens > 0 {
+			if hasCached {
 				messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "usage.cache_read_input_tokens", cachedTokens)
+			}
+			if view.HasCacheWrite {
+				messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "usage.cache_creation_input_tokens", view.CacheWrite)
 			}
 			results = append(results, translatorcommon.AppendSSEEventBytes(nil, "message_delta", messageDeltaJSON, 2))
 			param.MessageDeltaSent = true
@@ -466,12 +472,7 @@ func convertOpenAINonStreamingToAnthropic(rawJSON []byte) [][]byte {
 
 	// Set usage information
 	if usage := root.Get("usage"); usage.Exists() {
-		inputTokens, outputTokens, cachedTokens := extractOpenAIUsage(usage)
-		out, _ = sjson.SetBytes(out, "usage.input_tokens", inputTokens)
-		out, _ = sjson.SetBytes(out, "usage.output_tokens", outputTokens)
-		if cachedTokens > 0 {
-			out, _ = sjson.SetBytes(out, "usage.cache_read_input_tokens", cachedTokens)
-		}
+		out = applyClaudeUsage(out, usage)
 	}
 
 	return [][]byte{out}
@@ -762,12 +763,7 @@ func ConvertOpenAIResponseToClaudeNonStream(_ context.Context, _ string, origina
 	}
 
 	if respUsage := root.Get("usage"); respUsage.Exists() {
-		inputTokens, outputTokens, cachedTokens := extractOpenAIUsage(respUsage)
-		out, _ = sjson.SetBytes(out, "usage.input_tokens", inputTokens)
-		out, _ = sjson.SetBytes(out, "usage.output_tokens", outputTokens)
-		if cachedTokens > 0 {
-			out, _ = sjson.SetBytes(out, "usage.cache_read_input_tokens", cachedTokens)
-		}
+		out = applyClaudeUsage(out, respUsage)
 	}
 
 	if !stopReasonSet {
@@ -785,22 +781,53 @@ func ClaudeTokenCount(ctx context.Context, count int64) []byte {
 	return translatorcommon.ClaudeInputTokensJSON(count)
 }
 
-func extractOpenAIUsage(usage gjson.Result) (int64, int64, int64) {
+type openAIUsageView struct {
+	Input         int64
+	Output        int64
+	Cached        int64
+	CacheWrite    int64
+	HasCached     bool
+	HasCacheWrite bool
+}
+
+func applyClaudeUsage(out []byte, usage gjson.Result) []byte {
+	view := extractOpenAIUsage(usage)
+	out, _ = sjson.SetBytes(out, "usage.input_tokens", view.Input)
+	out, _ = sjson.SetBytes(out, "usage.output_tokens", view.Output)
+	if view.HasCached {
+		out, _ = sjson.SetBytes(out, "usage.cache_read_input_tokens", view.Cached)
+	}
+	if view.HasCacheWrite {
+		out, _ = sjson.SetBytes(out, "usage.cache_creation_input_tokens", view.CacheWrite)
+	}
+	return out
+}
+
+func extractOpenAIUsage(usage gjson.Result) openAIUsageView {
 	if !usage.Exists() || usage.Type == gjson.Null {
-		return 0, 0, 0
+		return openAIUsageView{}
 	}
 
-	inputTokens := usage.Get("prompt_tokens").Int()
-	outputTokens := usage.Get("completion_tokens").Int()
-	cachedTokens := usage.Get("prompt_tokens_details.cached_tokens").Int()
-
-	if cachedTokens > 0 {
-		if inputTokens >= cachedTokens {
-			inputTokens -= cachedTokens
-		} else {
-			inputTokens = 0
+	view := openAIUsageView{
+		Input:  usage.Get("prompt_tokens").Int(),
+		Output: usage.Get("completion_tokens").Int(),
+	}
+	cached := usage.Get("prompt_tokens_details.cached_tokens")
+	if cached.Exists() && cached.Type != gjson.Null {
+		view.HasCached = true
+		view.Cached = cached.Int()
+		if view.Cached > 0 {
+			if view.Input >= view.Cached {
+				view.Input -= view.Cached
+			} else {
+				log.Warnf("claude usage: cache_read_input_tokens=%d > prompt_tokens=%d; preserving raw input, no subtraction", view.Cached, view.Input)
+			}
 		}
 	}
-
-	return inputTokens, outputTokens, cachedTokens
+	written := usage.Get("prompt_tokens_details.cache_write_tokens")
+	if written.Exists() && written.Type != gjson.Null {
+		view.HasCacheWrite = true
+		view.CacheWrite = written.Int()
+	}
+	return view
 }

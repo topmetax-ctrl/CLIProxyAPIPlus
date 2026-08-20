@@ -450,21 +450,39 @@ func TestStreamingTool_EmptyNameArgsOnlyNoID(t *testing.T) {
 }
 
 func TestExtractOpenAIUsageSubtractsCachedFromInput(t *testing.T) {
-	input, output, cached := extractOpenAIUsage(gjson.Parse(`{
+	view := extractOpenAIUsage(gjson.Parse(`{
 		"prompt_tokens": 11490,
 		"completion_tokens": 22,
 		"prompt_tokens_details": {"cached_tokens": 11392}
 	}`))
-	if input != 98 || output != 22 || cached != 11392 {
-		t.Fatalf("input=%d output=%d cached=%d", input, output, cached)
+	if view.Input != 98 || view.Output != 22 || view.Cached != 11392 || !view.HasCached {
+		t.Fatalf("view=%+v", view)
 	}
 
-	input, output, cached = extractOpenAIUsage(gjson.Parse(`{
+	view = extractOpenAIUsage(gjson.Parse(`{
 		"prompt_tokens": 10,
 		"completion_tokens": 3
 	}`))
-	if input != 10 || output != 3 || cached != 0 {
-		t.Fatalf("absent cache: input=%d output=%d cached=%d", input, output, cached)
+	if view.Input != 10 || view.Output != 3 || view.HasCached {
+		t.Fatalf("absent cache: %+v", view)
+	}
+
+	view = extractOpenAIUsage(gjson.Parse(`{
+		"prompt_tokens": 10,
+		"completion_tokens": 3,
+		"prompt_tokens_details": {"cached_tokens": 0}
+	}`))
+	if !view.HasCached || view.Cached != 0 || view.Input != 10 {
+		t.Fatalf("known zero: %+v", view)
+	}
+
+	view = extractOpenAIUsage(gjson.Parse(`{
+		"prompt_tokens": 10,
+		"completion_tokens": 3,
+		"prompt_tokens_details": {"cached_tokens": 99}
+	}`))
+	if view.Input != 10 || view.Cached != 99 || !view.HasCached {
+		t.Fatalf("anomaly must keep raw input: %+v", view)
 	}
 }
 
@@ -484,6 +502,25 @@ func TestConvertOpenAINonStreamMapsCachedTokens(t *testing.T) {
 	}
 	if got := gjson.GetBytes(out, "usage.output_tokens").Int(); got != 22 {
 		t.Fatalf("output_tokens=%d body=%s", got, out)
+	}
+}
+
+func TestConvertOpenAINonStreamKnownZeroCacheRead(t *testing.T) {
+	out := ConvertOpenAIResponseToClaudeNonStream(context.Background(), "", nil, nil, []byte(`{
+		"id":"chatcmpl-test",
+		"object":"chat.completion",
+		"model":"cursor-test-model",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"PONG"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11,"prompt_tokens_details":{"cached_tokens":0}}
+	}`), nil)
+	if !gjson.GetBytes(out, "usage.cache_read_input_tokens").Exists() {
+		t.Fatalf("known zero must be emitted: %s", out)
+	}
+	if got := gjson.GetBytes(out, "usage.cache_read_input_tokens").Int(); got != 0 {
+		t.Fatalf("cache_read=%d", got)
+	}
+	if got := gjson.GetBytes(out, "usage.input_tokens").Int(); got != 10 {
+		t.Fatalf("input=%d", got)
 	}
 }
 

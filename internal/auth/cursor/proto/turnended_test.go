@@ -128,6 +128,27 @@ func TestDecodeTurnEndedEmptyMessageHasNoFields(t *testing.T) {
 	}
 }
 
+func TestDecodeTurnEndedUnknownLengthDelimitedDoesNotFail(t *testing.T) {
+	inner := protowire.AppendTag(nil, 1, protowire.VarintType)
+	inner = protowire.AppendVarint(inner, 10)
+	inner = protowire.AppendTag(inner, 6, protowire.BytesType)
+	inner = protowire.AppendBytes(inner, []byte("hello"))
+	iu := protowire.AppendTag(nil, IU_TurnEnded, protowire.BytesType)
+	iu = protowire.AppendBytes(iu, inner)
+	asm := protowire.AppendTag(nil, ASM_InteractionUpdate, protowire.BytesType)
+	asm = protowire.AppendBytes(asm, iu)
+	msg, err := DecodeAgentServerMessage(asm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !msg.TurnEndedUsage.HasInput || msg.TurnEndedUsage.InputTokens != 10 {
+		t.Fatalf("known field lost: %+v", msg.TurnEndedUsage)
+	}
+	if _, ok := msg.TurnEndedUsage.Unknown[6]; !ok {
+		t.Fatalf("unknown length-delimited field 6 missing: %+v", msg.TurnEndedUsage)
+	}
+}
+
 func TestGoldenComposerTurnEndedMapsNamedFields(t *testing.T) {
 	msg, err := DecodeAgentServerMessage(readFixture(t, "parallel", "185-recv.bin"))
 	if err != nil {
