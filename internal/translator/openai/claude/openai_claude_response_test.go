@@ -505,6 +505,25 @@ func TestConvertOpenAINonStreamMapsCachedTokens(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAINonStreamOmitsUnknownCache(t *testing.T) {
+	out := ConvertOpenAIResponseToClaudeNonStream(context.Background(), "", nil, nil, []byte(`{
+		"id":"chatcmpl-test",
+		"object":"chat.completion",
+		"model":"cursor-test-model",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"PONG"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":15554,"completion_tokens":12,"total_tokens":15566}
+	}`), nil)
+	if gjson.GetBytes(out, "usage.cache_read_input_tokens").Exists() {
+		t.Fatalf("unknown cache must not be emitted as zero: %s", out)
+	}
+	if gjson.GetBytes(out, "usage.cache_creation_input_tokens").Exists() {
+		t.Fatalf("unknown cache write must be omitted: %s", out)
+	}
+	if got := gjson.GetBytes(out, "usage.input_tokens").Int(); got != 15554 {
+		t.Fatalf("input_tokens=%d", got)
+	}
+}
+
 func TestConvertOpenAINonStreamKnownZeroCacheRead(t *testing.T) {
 	out := ConvertOpenAIResponseToClaudeNonStream(context.Background(), "", nil, nil, []byte(`{
 		"id":"chatcmpl-test",

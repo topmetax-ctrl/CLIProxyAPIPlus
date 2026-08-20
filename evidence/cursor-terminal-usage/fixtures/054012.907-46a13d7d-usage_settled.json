@@ -1,0 +1,18 @@
+{
+  "audit_id": "46a13d7d-0ae6-4532-babe-5d6890172e43",
+  "cache_read_anomaly": false,
+  "classification": "TERMINAL_USAGE_UNAVAILABLE_BY_PROTOCOL",
+  "continuity": "park_restore",
+  "conversation_id": "c60de97f",
+  "event_type": "usage_settled",
+  "finish": "eof",
+  "input_tokens": 15621,
+  "model": "cursor-grok-4.6-xhigh-fast",
+  "output_tokens": 67,
+  "reason": "eof_without_turn_ended",
+  "session_id": "p35-c-2-f8b192f2",
+  "terminal_expected": true,
+  "terminal_seen": false,
+  "timestamp": "2026-08-20T05:40:12.90751Z",
+  "usage_source": "token_delta"
+}

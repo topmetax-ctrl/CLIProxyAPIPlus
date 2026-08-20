@@ -55,10 +55,17 @@ observed (present zeros only).
 
 ## REMAINING LIMITATIONS
 
-- Upstream sometimes ends the H2 stream without TurnEnded (`eof_without_turn_ended`).
-- No same-request Cursor billing correlation.
-- OpenAI tool-result `cold_continuation` vs Claude park was not the P4 pair.
-- Native Cursor IDE baseline unavailable.
+Terminal reliability (EOF without TurnEnded, last-frame drain, fallback
+quality) is tracked in `evidence/cursor-terminal-usage/`, not here.
+
+This file only records cache behavior:
+
+- cache present
+- warm preserved
+- cold no reproducible degradation
+- mapping implemented
+
+Do **not** treat missing TurnEnded as a cache miss.
 
 ---
 
