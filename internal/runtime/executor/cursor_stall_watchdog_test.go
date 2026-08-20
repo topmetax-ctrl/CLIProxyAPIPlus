@@ -9,12 +9,12 @@ import (
 	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
 )
 
-func TestCursorNoProgressTimeoutDefaultIsOneMinute(t *testing.T) {
+func TestCursorNoProgressTimeoutDefaultIsFourMinutes(t *testing.T) {
 	if os.Getenv("CURSOR_NO_PROGRESS_TIMEOUT_S") != "" {
 		t.Skip("CURSOR_NO_PROGRESS_TIMEOUT_S overrides the compiled default")
 	}
-	if cursorNoProgressTimeout != 60*time.Second {
-		t.Fatalf("default cursorNoProgressTimeout = %s, want 1m0s so zombie ACTIVE_MODEL streams fail in ~1m not 4m", cursorNoProgressTimeout)
+	if cursorNoProgressTimeout != 240*time.Second {
+		t.Fatalf("production default cursorNoProgressTimeout = %s, want 4m0s (60s is canary-only via CURSOR_NO_PROGRESS_TIMEOUT_S)", cursorNoProgressTimeout)
 	}
 }
 

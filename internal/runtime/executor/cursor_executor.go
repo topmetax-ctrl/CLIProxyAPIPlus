@@ -46,36 +46,35 @@ const (
 	cursorCheckpointTTL     = 30 * time.Minute
 	cursorStreamFlushDelay  = 16 * time.Millisecond
 	cursorStreamMaxBatch    = 512
-	// cursorToolBatchIdle is how long the frame processor keeps draining after
-	// the most recent MCP tool call before declaring the parallel tool-call
-	// burst complete. Wire captures show Cursor emits every parallel exec of a
-	// turn within ~150ms of each other (then goes quiet waiting for results),
-	// so this window must exceed the inter-call gap while adding minimal
-	// latency to tool turns.
-	cursorToolBatchIdle = 400 * time.Millisecond
 )
+
+// cursorToolBatchIdle is how long the frame processor keeps draining after
+// the most recent MCP tool call before declaring the parallel tool-call
+// burst complete. Wire captures show Cursor emits every parallel exec of a
+// turn within ~150ms of each other (then goes quiet waiting for results),
+// so this window must exceed the inter-call gap while adding minimal
+// latency to tool turns. Variable so tests can shorten it.
+var cursorToolBatchIdle = 400 * time.Millisecond
 
 // cursorNoProgressTimeout bounds how long the frame processor tolerates an
 // upstream that sends no content-bearing message (heartbeats do not count).
 // Wire observation 2026-08-13: under account-level load Cursor sometimes parks
 // a stream forever, emitting only ~10s keepalives (or going fully silent
 // mid-generation), which would otherwise hang agent clients indefinitely.
-// Live canary 2026-08-20 on cursor-grok-4.6-xhigh-fast: healthy turns still
-// stream thinking/text/tool every 1–12s (max gap 12s across 11 streams,
-// including a 158s generation with 1258 real events). Zombies sit in
-// ACTIVE_MODEL with heartbeats only for the full timeout — that is what
-// made the dashboard look “slow”, not the 4–20s healthy path. 60s is ~5×
-// the observed inter-semantic gap, so it cuts zombies from 4 minutes to
-// 1 minute without touching waitLoop (client tool-wait stays unbounded)
-// and without treating heartbeats as progress. Variable so tests can
-// shorten it; CURSOR_NO_PROGRESS_TIMEOUT_S overrides it at startup.
+// 240s stays clear of legitimate slow turns — even 1.5MB payloads produce
+// their first frame within seconds — while failing fast enough that clients
+// (Claude Code times out at ~300s) can retry. A 60s canary is NOT a
+// production invariant: live healthy gap max was ~12s on a small sample,
+// which is insufficient to default a hard abort. Canary hosts may set
+// CURSOR_NO_PROGRESS_TIMEOUT_S=60; shadow telemetry records 30/60/90/120/180
+// crossings without aborting. Variable so tests can shorten it.
 var cursorNoProgressTimeout = func() time.Duration {
 	if s := os.Getenv("CURSOR_NO_PROGRESS_TIMEOUT_S"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
 			return time.Duration(n) * time.Second
 		}
 	}
-	return 60 * time.Second
+	return 240 * time.Second
 }()
 
 // CursorExecutor handles requests to the Cursor API via Connect+Protobuf protocol.
