@@ -45,6 +45,7 @@ func (h *Handler) GetUsageStatistics(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"usage":           snapshot,
 		"failed_requests": snapshot.FailureCount,
+		"cursor_usage":    usage.CursorCoverageSnapshotNow(),
 	})
 }
 

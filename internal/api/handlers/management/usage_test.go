@@ -105,6 +105,43 @@ func TestGetUsageStatisticsReturnsSnapshot(t *testing.T) {
 	}
 }
 
+func TestGetUsageStatisticsIncludesCursorCoverage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	before := usage.CursorCoverageSnapshotNow()
+	usage.RecordCursorCoverage(usage.CursorCoverageEvent{
+		Source:           "cursor_turn_ended",
+		Class:            "TURN_ENDED_MATCHED",
+		Reason:           "turn_ended_settled",
+		CacheKnown:       true,
+		HasCacheRead:     true,
+		CacheReadTokens:  8,
+		NoTurnEndedClass: "NO_TURN_ENDED_EXPECTED",
+		RealFailureClass: "REAL_FAILURE",
+	})
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/usage", nil)
+
+	h := &Handler{usageStats: usage.NewRequestStatistics()}
+	h.GetUsageStatistics(ginCtx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		CursorUsage usage.CursorCoverageSnapshot `json:"cursor_usage"`
+	}
+	if errUnmarshal := json.Unmarshal(rec.Body.Bytes(), &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal: %v", errUnmarshal)
+	}
+	if payload.CursorUsage.TurnEnded <= before.TurnEnded {
+		t.Fatalf("cursor_usage turn_ended did not increase: %+v", payload.CursorUsage)
+	}
+	if payload.CursorUsage.CacheObservable <= before.CacheObservable {
+		t.Fatalf("cache observable did not increase: %+v", payload.CursorUsage)
+	}
+}
+
 func TestExportUsageStatisticsReturnsVersionedSnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
