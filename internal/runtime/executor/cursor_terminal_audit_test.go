@@ -62,6 +62,10 @@ func TestClassifyCursorTerminalStates(t *testing.T) {
 	if class != cursorClassTerminalUnavailable || expected {
 		t.Fatalf("cancel: %s %t", class, expected)
 	}
+	class, reason, expected = classifyCursorTerminal(settled, "cancel", context.Canceled)
+	if class != cursorClassTurnEndedMatched || !expected || reason != "turn_ended_settled" {
+		t.Fatalf("TurnEnded must win over cancel: %s %s %t", class, reason, expected)
+	}
 }
 
 func TestDumpCursorUsageSettledCorrelatesAuditID(t *testing.T) {

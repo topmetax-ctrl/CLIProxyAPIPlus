@@ -249,11 +249,15 @@ func (s *H2Stream) readLoop() {
 				s.mu.Unlock()
 			}
 			if frame.StreamEnded() {
+				// Payload (if any) was already copied to dataCh. Callers must
+				// drain dataCh when Done() fires. ReadFrame never returns
+				// leftover bytes with io.EOF.
 				return
 			}
 
 		case *http2.HeadersFrame:
 			if frame.StreamEnded() {
+				log.Debugf("h2stream[%s]: HEADERS END_STREAM bytes=%d (HTTP/2 trailers; Connect usage lives in DATA frames)", s.id, len(frame.HeaderBlockFragment()))
 				return
 			}
 

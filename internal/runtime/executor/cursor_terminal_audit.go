@@ -83,9 +83,15 @@ func planCursorContinuation(mode string, coldTool, hasCheckpoint, sameAuth, hasT
 }
 
 func classifyCursorTerminal(usage *cursorTokenUsage, finish string, streamErr error) (class, reason string, expected bool) {
-	switch finish {
-	case "tool_calls":
+	// A tool-call boundary is not a missing TurnEnded: the logical turn is
+	// still parked waiting for results. Check that before terminal usage.
+	if finish == "tool_calls" {
 		return cursorClassNoTurnEndedExpected, "tool_call_boundary_waiting_for_resume", false
+	}
+	if usage != nil && usage.hasTerminal() {
+		return cursorClassTurnEndedMatched, "turn_ended_settled", true
+	}
+	switch finish {
 	case "cancel":
 		return cursorClassTerminalUnavailable, "cancelled", false
 	case "error":
@@ -93,11 +99,7 @@ func classifyCursorTerminal(usage *cursorTokenUsage, finish string, streamErr er
 			return cursorClassRealFailure, "stream_error", true
 		}
 		return cursorClassRealFailure, "error", true
-	}
-	if usage != nil && usage.hasTerminal() {
-		return cursorClassTurnEndedMatched, "turn_ended_settled", true
-	}
-	if finish == "eof" {
+	case "eof":
 		return cursorClassTerminalUnavailable, "eof_without_turn_ended", true
 	}
 	return cursorClassTerminalUnavailable, "stop_without_turn_ended", true
@@ -131,7 +133,13 @@ func dumpCursorUsageSettled(meta cursorAuditMeta, usage *cursorTokenUsage, finis
 		usage.mu.Lock()
 		payload["usage_source"] = usage.sourceLocked()
 		payload["terminal_seen"] = usage.terminalSeen
+		payload["connect_end_seen"] = usage.connectEndSeen
 		payload["cache_read_anomaly"] = usage.cacheReadExceedsInputLocked()
+		if len(usage.lastFrames) > 0 {
+			frames := make([]cursorFrameTrace, len(usage.lastFrames))
+			copy(frames, usage.lastFrames)
+			payload["last_frames"] = frames
+		}
 		if usage.terminalSeen {
 			if usage.terminal.HasInput {
 				payload["input_tokens"] = usage.terminal.InputTokens
@@ -181,5 +189,6 @@ func publishCursorUsageSettlement(usage *cursorTokenUsage, finish string, stream
 		meta = usage.auditCopy()
 	}
 	dumpCursorUsageSettled(meta, usage, finish, class, reason, expected, streamErr)
+	recordCursorUsageSettlement(usage, class, reason)
 	return class, reason, expected
 }

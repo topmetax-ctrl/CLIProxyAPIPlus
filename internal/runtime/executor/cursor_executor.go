@@ -604,8 +604,11 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 		usage,
 		nil,
 	); streamErr != nil {
-		class, reason, expected := classifyCursorTerminal(usage, "error", streamErr)
-		dumpCursorUsageSettled(audit, usage, "error", class, reason, expected, streamErr)
+		finish := "error"
+		if errors.Is(streamErr, context.Canceled) {
+			finish = "cancel"
+		}
+		publishCursorUsageSettlement(usage, finish, streamErr)
 		return resp, classifyCursorError(fmt.Errorf("cursor: stream error: %w", streamErr))
 	}
 
@@ -632,8 +635,11 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 		}
 		message["tool_calls"] = serialized
 	}
-	class, reason, expected := classifyCursorTerminal(usage, finishReason, nil)
-	dumpCursorUsageSettled(audit, usage, finishReason, class, reason, expected, nil)
+	finish := finishReason
+	if finishReason == "stop" && !usage.hasTerminal() {
+		finish = "eof"
+	}
+	publishCursorUsageSettlement(usage, finish, nil)
 	reporter.Publish(ctx, usage.detail())
 	body := map[string]any{
 		"id":      "chatcmpl-" + uuid.New().String()[:28],
@@ -1640,7 +1646,51 @@ type cursorTokenUsage struct {
 	inputTokensEst int64 // estimated from request payload size
 	terminal       cursorproto.TurnEndedUsage
 	terminalSeen   bool
+	connectEndSeen bool
+	lastFrames     []cursorFrameTrace
 	audit          cursorAuditMeta
+}
+
+type cursorFrameTrace struct {
+	Kind  string `json:"kind"`
+	Flags int    `json:"flags"`
+	At    string `json:"t"`
+}
+
+func (u *cursorTokenUsage) noteFrame(kind string, flags byte) {
+	if u == nil {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	entry := cursorFrameTrace{
+		Kind:  kind,
+		Flags: int(flags),
+		At:    time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if len(u.lastFrames) >= 10 {
+		u.lastFrames = append(u.lastFrames[1:], entry)
+	} else {
+		u.lastFrames = append(u.lastFrames, entry)
+	}
+}
+
+func (u *cursorTokenUsage) markConnectEnd() {
+	if u == nil {
+		return
+	}
+	u.mu.Lock()
+	u.connectEndSeen = true
+	u.mu.Unlock()
+}
+
+func (u *cursorTokenUsage) connectEnd() bool {
+	if u == nil {
+		return false
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.connectEndSeen
 }
 
 func (u *cursorTokenUsage) bindAudit(meta cursorAuditMeta) {
@@ -1873,6 +1923,75 @@ func processH2SessionFrames(
 		batchTimerC = nil
 	}
 
+	drainBufferedData := func() {
+		for {
+			select {
+			case data, ok := <-stream.Data():
+				if !ok {
+					return
+				}
+				buf.Write(data)
+			default:
+				return
+			}
+		}
+	}
+
+	applyWaitFrames := func() {
+		for {
+			cb := buf.Bytes()
+			if len(cb) == 0 {
+				break
+			}
+			wf, wp, wc, wok := cursorproto.ParseConnectFrame(cb)
+			if !wok {
+				break
+			}
+			buf.Next(wc)
+			if wf&cursorproto.ConnectEndStreamFlag != 0 {
+				if tokenUsage != nil {
+					tokenUsage.markConnectEnd()
+					tokenUsage.noteFrame("connect_end_stream", wf)
+				}
+				continue
+			}
+			wmsg, werr := cursorproto.DecodeAgentServerMessage(wp)
+			if werr != nil {
+				if tokenUsage != nil {
+					tokenUsage.noteFrame("decode_error", wf)
+				}
+				continue
+			}
+			if tokenUsage != nil {
+				tokenUsage.noteFrame(cursorSemanticKind(wmsg.Type), wf)
+			}
+			switch wmsg.Type {
+			case cursorproto.ServerMsgHeartbeat:
+				obs.noteHeartbeat()
+			case cursorproto.ServerMsgKvGetBlob:
+				blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
+				d := blobStore[blobKey]
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvGetBlobResult(wmsg.KvId, d), 0))
+			case cursorproto.ServerMsgKvSetBlob:
+				blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
+				blobStore[blobKey] = append([]byte(nil), wmsg.BlobData...)
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvSetBlobResult(wmsg.KvId), 0))
+			case cursorproto.ServerMsgExecRequestCtx:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecRequestContextResult(wmsg.ExecMsgId, wmsg.ExecId, mcpTools), 0))
+			case cursorproto.ServerMsgCheckpoint:
+				if onCheckpoint != nil && len(wmsg.CheckpointData) > 0 {
+					onCheckpoint(wmsg.CheckpointData)
+				}
+			case cursorproto.ServerMsgTurnEnded:
+				observeTurnEnded(ctx, wmsg, tokenUsage)
+			case cursorproto.ServerMsgTokenDelta:
+				if tokenUsage != nil && wmsg.TokenDelta > 0 {
+					tokenUsage.addOutput(wmsg.TokenDelta)
+				}
+			}
+		}
+	}
+
 	// finalizeToolBatch surfaces the collected tool-call burst. It returns
 	// done=true when the frame processor should stop reading (OpenAI stateless
 	// path: the client resends the transcript with results as a new request).
@@ -1900,6 +2019,8 @@ func processH2SessionFrames(
 		for {
 			select {
 			case <-ctx.Done():
+				drainBufferedData()
+				applyWaitFrames()
 				finishReason = stallTerminalClientCancel
 				return false, ctx.Err()
 			case results, ok := <-toolResultCh:
@@ -1911,49 +2032,18 @@ func processH2SessionFrames(
 				break waitLoop
 			case waitData, ok := <-stream.Data():
 				if !ok {
+					applyWaitFrames()
 					finishReason = stallTerminalStreamEnd
-					return false, stream.Err()
+					return true, stream.Err()
 				}
 				buf.Write(waitData)
-				for {
-					cb := buf.Bytes()
-					if len(cb) == 0 {
-						break
-					}
-					wf, wp, wc, wok := cursorproto.ParseConnectFrame(cb)
-					if !wok {
-						break
-					}
-					buf.Next(wc)
-					if wf&cursorproto.ConnectEndStreamFlag != 0 {
-						continue
-					}
-					wmsg, werr := cursorproto.DecodeAgentServerMessage(wp)
-					if werr != nil {
-						continue
-					}
-					switch wmsg.Type {
-					case cursorproto.ServerMsgHeartbeat:
-						obs.noteHeartbeat()
-					case cursorproto.ServerMsgKvGetBlob:
-						blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
-						d := blobStore[blobKey]
-						stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvGetBlobResult(wmsg.KvId, d), 0))
-					case cursorproto.ServerMsgKvSetBlob:
-						blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
-						blobStore[blobKey] = append([]byte(nil), wmsg.BlobData...)
-						stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvSetBlobResult(wmsg.KvId), 0))
-					case cursorproto.ServerMsgExecRequestCtx:
-						stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecRequestContextResult(wmsg.ExecMsgId, wmsg.ExecId, mcpTools), 0))
-					case cursorproto.ServerMsgCheckpoint:
-						if onCheckpoint != nil && len(wmsg.CheckpointData) > 0 {
-							onCheckpoint(wmsg.CheckpointData)
-						}
-					}
-				}
+				applyWaitFrames()
 			case <-stream.Done():
+				log.Debugf("cursor: waitLoop stream done; draining leftover frames")
+				drainBufferedData()
+				applyWaitFrames()
 				finishReason = stallTerminalStreamEnd
-				return false, stream.Err()
+				return true, stream.Err()
 			}
 		}
 		obs.resumeAfterToolWait()
@@ -1973,10 +2063,158 @@ func processH2SessionFrames(
 		return false, nil
 	}
 
+	processCompleteFrames := func() (ended bool, err error) {
+		for {
+			currentBuf := buf.Bytes()
+			if len(currentBuf) == 0 {
+				return false, nil
+			}
+			flags, payload, consumed, ok := cursorproto.ParseConnectFrame(currentBuf)
+			if !ok {
+				previewLen := min(20, len(currentBuf))
+				log.Debugf("cursor: incomplete frame in buffer, waiting for more data (buf=%d bytes, first bytes: %x = %q)", len(currentBuf), currentBuf[:previewLen], string(currentBuf[:previewLen]))
+				return false, nil
+			}
+			buf.Next(consumed)
+			log.Debugf("cursor: parsed Connect frame flags=0x%02x payload=%d bytes consumed=%d", flags, len(payload), consumed)
+
+			if flags&cursorproto.ConnectEndStreamFlag != 0 {
+				if tokenUsage != nil {
+					tokenUsage.markConnectEnd()
+					tokenUsage.noteFrame("connect_end_stream", flags)
+				}
+				if err := cursorproto.ParseConnectEndStream(payload); err != nil {
+					log.Warnf("cursor: connect end stream error: %v", err)
+					finishReason = stallTerminalUpstreamError
+					return false, err
+				}
+				continue
+			}
+
+			msg, err := cursorproto.DecodeAgentServerMessage(payload)
+			if err != nil {
+				if tokenUsage != nil {
+					tokenUsage.noteFrame("decode_error", flags)
+				}
+				log.Debugf("cursor: failed to decode server message: %v", err)
+				continue
+			}
+
+			if tokenUsage != nil {
+				tokenUsage.noteFrame(cursorSemanticKind(msg.Type), flags)
+			}
+
+			log.Debugf("cursor: decoded server message type=%d", msg.Type)
+			if msg.Type != cursorproto.ServerMsgHeartbeat {
+				lastSemanticKind = cursorSemanticKind(msg.Type)
+				heartbeatsSinceSemantic = 0
+				resetProgressTimer()
+				obs.noteProgress(msg.Type)
+			} else {
+				heartbeatsSinceSemantic++
+				obs.noteHeartbeat()
+			}
+			switch msg.Type {
+			case cursorproto.ServerMsgTextDelta:
+				if msg.Text != "" && onText != nil {
+					onText(msg.Text, false)
+				}
+			case cursorproto.ServerMsgThinkingDelta:
+				if msg.Text != "" && onText != nil {
+					onText(msg.Text, true)
+				}
+			case cursorproto.ServerMsgThinkingCompleted:
+			case cursorproto.ServerMsgTurnEnded:
+				observeTurnEnded(ctx, msg, tokenUsage)
+				if len(toolBatch) > 0 && toolResultCh == nil && onToolBatch != nil {
+					stopBatchTimer()
+					onToolBatch(toolBatch)
+					toolBatch = nil
+				}
+				finishReason = stallTerminalTurnEnded
+				return true, nil
+			case cursorproto.ServerMsgHeartbeat:
+				continue
+			case cursorproto.ServerMsgCheckpoint:
+				if onCheckpoint != nil && len(msg.CheckpointData) > 0 {
+					onCheckpoint(msg.CheckpointData)
+				}
+			case cursorproto.ServerMsgTokenDelta:
+				if tokenUsage != nil && msg.TokenDelta > 0 {
+					tokenUsage.addOutput(msg.TokenDelta)
+				}
+			case cursorproto.ServerMsgKvGetBlob:
+				blobKey := cursorproto.BlobIdHex(msg.BlobId)
+				d := blobStore[blobKey]
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvGetBlobResult(msg.KvId, d), 0))
+			case cursorproto.ServerMsgKvSetBlob:
+				blobKey := cursorproto.BlobIdHex(msg.BlobId)
+				blobStore[blobKey] = append([]byte(nil), msg.BlobData...)
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeKvSetBlobResult(msg.KvId), 0))
+			case cursorproto.ServerMsgExecRequestCtx:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecRequestContextResult(msg.ExecMsgId, msg.ExecId, mcpTools), 0))
+			case cursorproto.ServerMsgExecMcpArgs:
+				decodedArgs := decodeMcpArgsToJSON(msg.McpArgs)
+				toolCallId := normalizeToolCallID(msg.McpToolCallId)
+				if toolCallId == "" {
+					toolCallId = uuid.New().String()
+				}
+				log.Debugf("cursor: received mcpArgs from server: execMsgId=%d execId=%q toolName=%s toolCallId=%s (batch=%d)",
+					msg.ExecMsgId, msg.ExecId, msg.McpToolName, toolCallId, len(toolBatch)+1)
+				toolBatch = append(toolBatch, pendingMcpExec{
+					ExecMsgId:  msg.ExecMsgId,
+					ExecId:     msg.ExecId,
+					ToolCallId: toolCallId,
+					ToolName:   msg.McpToolName,
+					Args:       decodedArgs,
+				})
+				armBatchTimer()
+			case cursorproto.ServerMsgExecReadArgs:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecReadRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
+			case cursorproto.ServerMsgExecWriteArgs:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecWriteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
+			case cursorproto.ServerMsgExecDeleteArgs:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecDeleteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
+			case cursorproto.ServerMsgExecLsArgs:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecLsRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
+			case cursorproto.ServerMsgExecGrepArgs:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecGrepError(msg.ExecMsgId, msg.ExecId, rejectReason), 0))
+			case cursorproto.ServerMsgExecShellArgs, cursorproto.ServerMsgExecShellStream:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecShellRejected(msg.ExecMsgId, msg.ExecId, msg.Command, msg.WorkingDirectory, rejectReason), 0))
+			case cursorproto.ServerMsgExecBgShellSpawn:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecBackgroundShellSpawnRejected(msg.ExecMsgId, msg.ExecId, msg.Command, msg.WorkingDirectory, rejectReason), 0))
+			case cursorproto.ServerMsgExecFetchArgs:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecFetchError(msg.ExecMsgId, msg.ExecId, msg.Url, rejectReason), 0))
+			case cursorproto.ServerMsgExecDiagnostics:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecDiagnosticsResult(msg.ExecMsgId, msg.ExecId), 0))
+			case cursorproto.ServerMsgExecWriteShellStdin:
+				stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecWriteShellStdinError(msg.ExecMsgId, msg.ExecId, rejectReason), 0))
+			}
+		}
+	}
+
+	finishOnStreamClose := func() error {
+		ended, err := processCompleteFrames()
+		if ended {
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		if len(toolBatch) > 0 && toolResultCh == nil && onToolBatch != nil {
+			stopBatchTimer()
+			onToolBatch(toolBatch)
+			toolBatch = nil
+		}
+		return stream.Err()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
-			log.Debugf("cursor: processH2SessionFrames exiting: context done")
+			log.Debugf("cursor: processH2SessionFrames exiting: context done; draining leftover frames")
+			drainBufferedData()
+			_, _ = processCompleteFrames()
 			finishReason = stallTerminalClientCancel
 			return ctx.Err()
 		case <-batchTimerC:
@@ -1998,168 +2236,31 @@ func processH2SessionFrames(
 			// not WAITING_CLIENT_TOOL_RESULT.
 			log.Warnf("cursor: processH2SessionFrames[%s]: no upstream progress within %s (heartbeats only) generation_state=ACTIVE_MODEL pending_batch=%d tool_result_ch=%t last_semantic=%s heartbeats_since_semantic=%d — failing stalled stream",
 				stream.ID(), cursorNoProgressTimeout, len(toolBatch), toolResultCh != nil, lastSemanticKind, heartbeatsSinceSemantic)
+			drainBufferedData()
+			_, _ = processCompleteFrames()
 			finishReason = stallTerminalWatchdog
 			return cursorWatchdogErr(fmt.Sprintf("cursor: upstream stalled: no progress within %s", cursorNoProgressTimeout))
 		case data, ok := <-stream.Data():
 			if !ok {
 				log.Debugf("cursor: processH2SessionFrames[%s]: exiting: stream data channel closed", stream.ID())
-				// Flush any collected OpenAI tool batch before ending so a
-				// stream that closes right after the burst still surfaces calls.
-				if len(toolBatch) > 0 && toolResultCh == nil && onToolBatch != nil {
-					stopBatchTimer()
-					onToolBatch(toolBatch)
-					toolBatch = nil
-				}
-				return stream.Err() // may be RST_STREAM, GOAWAY, or nil for clean close
+				return finishOnStreamClose()
 			}
-			// Log first 20 bytes of raw data for debugging
 			previewLen := min(20, len(data))
 			log.Debugf("cursor: processH2SessionFrames[%s]: received %d bytes from dataCh, first bytes: %x (%q)", stream.ID(), len(data), data[:previewLen], string(data[:previewLen]))
 			buf.Write(data)
 			log.Debugf("cursor: processH2SessionFrames[%s]: buf total=%d", stream.ID(), buf.Len())
-
-			// Process all complete frames
-			for {
-				currentBuf := buf.Bytes()
-				if len(currentBuf) == 0 {
-					break
-				}
-				flags, payload, consumed, ok := cursorproto.ParseConnectFrame(currentBuf)
-				if !ok {
-					// Log detailed info about why parsing failed
-					previewLen := min(20, len(currentBuf))
-					log.Debugf("cursor: incomplete frame in buffer, waiting for more data (buf=%d bytes, first bytes: %x = %q)", len(currentBuf), currentBuf[:previewLen], string(currentBuf[:previewLen]))
-					break
-				}
-				buf.Next(consumed)
-				log.Debugf("cursor: parsed Connect frame flags=0x%02x payload=%d bytes consumed=%d", flags, len(payload), consumed)
-
-				if flags&cursorproto.ConnectEndStreamFlag != 0 {
-					if err := cursorproto.ParseConnectEndStream(payload); err != nil {
-						log.Warnf("cursor: connect end stream error: %v", err)
-						finishReason = stallTerminalUpstreamError
-						return err // propagate server-side errors (quota, rate limit, etc.)
-					}
-					continue
-				}
-
-				msg, err := cursorproto.DecodeAgentServerMessage(payload)
-				if err != nil {
-					log.Debugf("cursor: failed to decode server message: %v", err)
-					continue
-				}
-
-				log.Debugf("cursor: decoded server message type=%d", msg.Type)
-				if msg.Type != cursorproto.ServerMsgHeartbeat {
-					lastSemanticKind = cursorSemanticKind(msg.Type)
-					heartbeatsSinceSemantic = 0
-					resetProgressTimer()
-					obs.noteProgress(msg.Type)
-				} else {
-					heartbeatsSinceSemantic++
-					obs.noteHeartbeat()
-				}
-				switch msg.Type {
-				case cursorproto.ServerMsgTextDelta:
-					if msg.Text != "" && onText != nil {
-						onText(msg.Text, false)
-					}
-				case cursorproto.ServerMsgThinkingDelta:
-					if msg.Text != "" && onText != nil {
-						onText(msg.Text, true)
-					}
-				case cursorproto.ServerMsgThinkingCompleted:
-					// Handled by caller
-
-				case cursorproto.ServerMsgTurnEnded:
-					observeTurnEnded(ctx, msg, tokenUsage)
-					// Defensive: if a tool burst was still buffered when the turn
-					// ended (OpenAI path), surface it before completing.
-					if len(toolBatch) > 0 && toolResultCh == nil && onToolBatch != nil {
-						stopBatchTimer()
-						onToolBatch(toolBatch)
-						toolBatch = nil
-					}
-					finishReason = stallTerminalTurnEnded
-					return nil // clean completion
-
-				case cursorproto.ServerMsgHeartbeat:
-					// Server heartbeat, ignore silently
-					continue
-
-				case cursorproto.ServerMsgCheckpoint:
-					if onCheckpoint != nil && len(msg.CheckpointData) > 0 {
-						onCheckpoint(msg.CheckpointData)
-					}
-					continue
-
-				case cursorproto.ServerMsgTokenDelta:
-					if tokenUsage != nil && msg.TokenDelta > 0 {
-						tokenUsage.addOutput(msg.TokenDelta)
-					}
-					continue
-
-				case cursorproto.ServerMsgKvGetBlob:
-					blobKey := cursorproto.BlobIdHex(msg.BlobId)
-					data := blobStore[blobKey]
-					resp := cursorproto.EncodeKvGetBlobResult(msg.KvId, data)
-					stream.Write(cursorproto.FrameConnectMessage(resp, 0))
-
-				case cursorproto.ServerMsgKvSetBlob:
-					blobKey := cursorproto.BlobIdHex(msg.BlobId)
-					blobStore[blobKey] = append([]byte(nil), msg.BlobData...)
-					resp := cursorproto.EncodeKvSetBlobResult(msg.KvId)
-					stream.Write(cursorproto.FrameConnectMessage(resp, 0))
-
-				case cursorproto.ServerMsgExecRequestCtx:
-					resp := cursorproto.EncodeExecRequestContextResult(msg.ExecMsgId, msg.ExecId, mcpTools)
-					stream.Write(cursorproto.FrameConnectMessage(resp, 0))
-
-				case cursorproto.ServerMsgExecMcpArgs:
-					decodedArgs := decodeMcpArgsToJSON(msg.McpArgs)
-					toolCallId := normalizeToolCallID(msg.McpToolCallId)
-					if toolCallId == "" {
-						toolCallId = uuid.New().String()
-					}
-					log.Debugf("cursor: received mcpArgs from server: execMsgId=%d execId=%q toolName=%s toolCallId=%s (batch=%d)",
-						msg.ExecMsgId, msg.ExecId, msg.McpToolName, toolCallId, len(toolBatch)+1)
-					toolBatch = append(toolBatch, pendingMcpExec{
-						ExecMsgId:  msg.ExecMsgId,
-						ExecId:     msg.ExecId,
-						ToolCallId: toolCallId,
-						ToolName:   msg.McpToolName,
-						Args:       decodedArgs,
-					})
-					// Keep draining: more parallel calls in this turn may follow.
-					// The batch idle timer (or turn end / stream close) finalizes.
-					armBatchTimer()
-
-				case cursorproto.ServerMsgExecReadArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecReadRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
-				case cursorproto.ServerMsgExecWriteArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecWriteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
-				case cursorproto.ServerMsgExecDeleteArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecDeleteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
-				case cursorproto.ServerMsgExecLsArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecLsRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason), 0))
-				case cursorproto.ServerMsgExecGrepArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecGrepError(msg.ExecMsgId, msg.ExecId, rejectReason), 0))
-				case cursorproto.ServerMsgExecShellArgs, cursorproto.ServerMsgExecShellStream:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecShellRejected(msg.ExecMsgId, msg.ExecId, msg.Command, msg.WorkingDirectory, rejectReason), 0))
-				case cursorproto.ServerMsgExecBgShellSpawn:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecBackgroundShellSpawnRejected(msg.ExecMsgId, msg.ExecId, msg.Command, msg.WorkingDirectory, rejectReason), 0))
-				case cursorproto.ServerMsgExecFetchArgs:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecFetchError(msg.ExecMsgId, msg.ExecId, msg.Url, rejectReason), 0))
-				case cursorproto.ServerMsgExecDiagnostics:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecDiagnosticsResult(msg.ExecMsgId, msg.ExecId), 0))
-				case cursorproto.ServerMsgExecWriteShellStdin:
-					stream.Write(cursorproto.FrameConnectMessage(cursorproto.EncodeExecWriteShellStdinError(msg.ExecMsgId, msg.ExecId, rejectReason), 0))
-				}
+			ended, err := processCompleteFrames()
+			if ended {
+				return err
+			}
+			if err != nil {
+				return err
 			}
 
 		case <-stream.Done():
-			log.Debugf("cursor: processH2SessionFrames exiting: stream done")
-			return stream.Err()
+			log.Debugf("cursor: processH2SessionFrames[%s]: stream done; draining leftover frames before terminal handling", stream.ID())
+			drainBufferedData()
+			return finishOnStreamClose()
 		}
 	}
 }
