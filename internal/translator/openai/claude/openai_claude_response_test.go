@@ -448,3 +448,61 @@ func TestStreamingTool_EmptyNameArgsOnlyNoID(t *testing.T) {
 		t.Fatalf("stop_reason = %q, want %q", got, "tool_use")
 	}
 }
+
+func TestExtractOpenAIUsageSubtractsCachedFromInput(t *testing.T) {
+	input, output, cached := extractOpenAIUsage(gjson.Parse(`{
+		"prompt_tokens": 11490,
+		"completion_tokens": 22,
+		"prompt_tokens_details": {"cached_tokens": 11392}
+	}`))
+	if input != 98 || output != 22 || cached != 11392 {
+		t.Fatalf("input=%d output=%d cached=%d", input, output, cached)
+	}
+
+	input, output, cached = extractOpenAIUsage(gjson.Parse(`{
+		"prompt_tokens": 10,
+		"completion_tokens": 3
+	}`))
+	if input != 10 || output != 3 || cached != 0 {
+		t.Fatalf("absent cache: input=%d output=%d cached=%d", input, output, cached)
+	}
+}
+
+func TestConvertOpenAINonStreamMapsCachedTokens(t *testing.T) {
+	out := ConvertOpenAIResponseToClaudeNonStream(context.Background(), "", nil, nil, []byte(`{
+		"id":"chatcmpl-test",
+		"object":"chat.completion",
+		"model":"cursor-test-model",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"PONG-2"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":11490,"completion_tokens":22,"total_tokens":11512,"prompt_tokens_details":{"cached_tokens":11392}}
+	}`), nil)
+	if got := gjson.GetBytes(out, "usage.cache_read_input_tokens").Int(); got != 11392 {
+		t.Fatalf("cache_read_input_tokens=%d body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "usage.input_tokens").Int(); got != 98 {
+		t.Fatalf("input_tokens=%d, want uncached 98 body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "usage.output_tokens").Int(); got != 22 {
+		t.Fatalf("output_tokens=%d body=%s", got, out)
+	}
+}
+
+func TestConvertOpenAIStreamMapsCachedTokens(t *testing.T) {
+	events := runStream(t, `{"stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"PONG-2"}}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11490,"completion_tokens":22,"total_tokens":11512,"prompt_tokens_details":{"cached_tokens":11392}}}`,
+	)
+	var sawCache bool
+	for _, e := range events {
+		if e.Type != "message_delta" {
+			continue
+		}
+		if gjson.Get(e.Payload, "usage.cache_read_input_tokens").Int() == 11392 &&
+			gjson.Get(e.Payload, "usage.input_tokens").Int() == 98 {
+			sawCache = true
+		}
+	}
+	if !sawCache {
+		t.Fatalf("stream missing mapped cache usage: %+v", events)
+	}
+}

@@ -122,10 +122,26 @@ const (
 
 // InteractionUpdate oneof "message"
 const (
-	IU_TextDelta         = 1 // TextDeltaUpdate
-	IU_ThinkingDelta     = 4 // ThinkingDeltaUpdate
-	IU_ThinkingCompleted = 5 // ThinkingCompletedUpdate
+	IU_TextDelta         = 1  // TextDeltaUpdate
+	IU_ToolCallStarted   = 2  // ToolCallStartedUpdate
+	IU_ToolCallCompleted = 3  // ToolCallCompletedUpdate
+	IU_ThinkingDelta     = 4  // ThinkingDeltaUpdate
+	IU_ThinkingCompleted = 5  // ThinkingCompletedUpdate
+	IU_TokenDelta        = 8  // TokenDeltaUpdate
+	IU_Heartbeat         = 13 // HeartbeatUpdate
+	IU_TurnEnded         = 14 // TurnEndedUpdate
+	IU_StepStarted       = 16 // StepStartedUpdate
+	IU_StepCompleted     = 17 // StepCompletedUpdate
 )
+
+// TurnEndedUpdate nested fields. The embedded alma-plugins descriptor lists
+// this message as empty; Cursor.app workbench.desktop.main.js (protobuf-es
+// makeMessageType "agent.v1.TurnEndedUpdate") defines:
+//
+//	1 input_tokens, 2 output_tokens, 3 cache_read_tokens,
+//	4 cache_write_tokens, 5 reasoning_tokens
+//
+// all optional scalar int64 (T:3). See TE_* in turnended.go.
 
 // TextDeltaUpdate (msg 92)
 const (

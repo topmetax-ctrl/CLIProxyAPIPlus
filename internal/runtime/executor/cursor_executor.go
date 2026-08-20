@@ -560,6 +560,7 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 		flattenConversationIntoUserText(parsed)
 	}
 	params := buildRunRequestParams(parsed, conversationID, req.Model)
+	dumpCursorRequestFingerprint(parsed, params, resolveCursorContinuity(openAICompatible && len(parsed.ToolResults) > 0, false, parsed), conversationID)
 
 	requestBytes := cursorproto.EncodeRunRequest(params)
 	framedRequest := cursorproto.FrameConnectMessage(requestBytes, 0)
@@ -572,7 +573,11 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 		return resp, fmt.Errorf("cursor: failed to send request: %w", err)
 	}
 
-	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	sessionCtx, sessionCancel := context.WithCancel(contextWithCursorAudit(ctx, cursorAuditMeta{
+		ConversationID: conversationID,
+		Model:          req.Model,
+		Continuity:     resolveCursorContinuity(openAICompatible && len(parsed.ToolResults) > 0, false, parsed),
+	}))
 	defer sessionCancel()
 	go cursorH2Heartbeat(sessionCtx, stream)
 
@@ -626,12 +631,7 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 		}
 		message["tool_calls"] = serialized
 	}
-	inputTokens, outputTokens := usage.get()
-	reporter.Publish(ctx, coreusage.Detail{
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		TotalTokens:  inputTokens + outputTokens,
-	})
+	reporter.Publish(ctx, usage.detail())
 	body := map[string]any{
 		"id":      "chatcmpl-" + uuid.New().String()[:28],
 		"object":  "chat.completion",
@@ -642,11 +642,7 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 			"message":       message,
 			"finish_reason": finishReason,
 		}},
-		"usage": map[string]int64{
-			"prompt_tokens":     inputTokens,
-			"completion_tokens": outputTokens,
-			"total_tokens":      inputTokens + outputTokens,
-		},
+		"usage": usage.openAIUsage(),
 	}
 	result, marshalErr := json.Marshal(body)
 	if marshalErr != nil {
@@ -662,6 +658,123 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 
 func isOpenAICompatibleSourceFormat(format sdktranslator.Format) bool {
 	return format.String() == "" || format.String() == "openai"
+}
+
+type cursorAuditMeta struct {
+	ConversationID string
+	Model          string
+	Continuity     string
+}
+
+type cursorAuditCtxKey struct{}
+
+func contextWithCursorAudit(ctx context.Context, meta cursorAuditMeta) context.Context {
+	return context.WithValue(ctx, cursorAuditCtxKey{}, meta)
+}
+
+func cursorAuditFromContext(ctx context.Context) cursorAuditMeta {
+	if ctx == nil {
+		return cursorAuditMeta{}
+	}
+	meta, _ := ctx.Value(cursorAuditCtxKey{}).(cursorAuditMeta)
+	return meta
+}
+
+func observeTurnEnded(ctx context.Context, msg *cursorproto.DecodedServerMessage, usage *cursorTokenUsage) {
+	if msg == nil {
+		return
+	}
+	meta := cursorAuditFromContext(ctx)
+	term := msg.TurnEndedUsage
+	if !term.HasAny() && len(msg.TurnEndedRaw) > 0 {
+		term = cursorproto.DecodeTurnEndedUsage(msg.TurnEndedRaw, msg.TurnEndedFields)
+	}
+	settled := false
+	if usage != nil {
+		settled = usage.settleTurnEnded(term)
+	}
+	log.Debugf("cursor: TurnEnded received conv=%s model=%s continuity=%s usage_source=cursor_turn_ended settled=%t %s hex=%s",
+		meta.ConversationID, meta.Model, meta.Continuity, settled, term.DebugSummary(), hex.EncodeToString(msg.TurnEndedRaw))
+	dumpExtra := map[string]string{
+		"conversation_id": cursorproto.ConversationShort(meta.ConversationID),
+		"model":           meta.Model,
+		"continuity":      meta.Continuity,
+		"outer_field":     strconv.Itoa(cursorproto.IU_TurnEnded),
+		"usage_source":    "cursor_turn_ended",
+	}
+	if term.HasInput {
+		dumpExtra["input_tokens"] = strconv.FormatInt(term.InputTokens, 10)
+	}
+	if term.HasOutput {
+		dumpExtra["output_tokens"] = strconv.FormatInt(term.OutputTokens, 10)
+	}
+	if term.HasCacheRead {
+		dumpExtra["cache_read_tokens"] = strconv.FormatInt(term.CacheReadTokens, 10)
+	}
+	if term.HasCacheWrite {
+		dumpExtra["cache_write_tokens"] = strconv.FormatInt(term.CacheWriteTokens, 10)
+	}
+	if term.HasReasoning {
+		dumpExtra["reasoning_tokens"] = strconv.FormatInt(term.ReasoningTokens, 10)
+	}
+	cursorproto.MaybeDumpWire("turn_ended", dumpExtra, msg.TurnEndedRaw, msg.TurnEndedFields)
+}
+
+func dumpCursorRequestFingerprint(parsed *parsedOpenAIRequest, params *cursorproto.RunRequestParams, continuity, conversationID string) {
+	dir := strings.TrimSpace(os.Getenv("CURSOR_WIRE_DUMP_DIR"))
+	if dir == "" || params == nil || parsed == nil {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	tools := make([]string, 0, len(params.McpTools))
+	for _, tool := range params.McpTools {
+		tools = append(tools, tool.Name+"\n"+string(tool.InputSchema))
+	}
+	payload := map[string]any{
+		"event_type":            "request_fingerprint",
+		"timestamp":             time.Now().UTC().Format(time.RFC3339Nano),
+		"conversation_id":       cursorproto.ConversationShort(conversationID),
+		"model":                 params.ModelId,
+		"continuity":            continuity,
+		"has_raw_checkpoint":    len(params.RawCheckpoint) > 0,
+		"checkpoint_bytes":      len(params.RawCheckpoint),
+		"system_sha256":         sha256Hex([]byte(params.SystemPrompt)),
+		"user_text_sha256":      sha256Hex([]byte(params.UserText)),
+		"tools_sha256":          sha256Hex([]byte(strings.Join(tools, "\n"))),
+		"history_prefix_sha256": sha256Hex([]byte(strings.TrimSpace(parsed.UserText) + "\n" + params.UserText)),
+		"system_bytes":          len(params.SystemPrompt),
+		"user_text_bytes":       len(params.UserText),
+		"tool_count":            len(params.McpTools),
+		"turn_count":            len(params.Turns),
+		"message_id_present":    params.MessageId != "",
+		"message_id_is_uuid":    len(params.MessageId) == 36,
+	}
+	b, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return
+	}
+	name := fmt.Sprintf("%s-%s-fingerprint.json", time.Now().UTC().Format("150405.000"), cursorproto.ConversationShort(conversationID))
+	_ = os.WriteFile(filepath.Join(dir, name), append(b, '\n'), 0o644)
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func resolveCursorContinuity(coldToolContinuation, hasCheckpoint bool, parsed *parsedOpenAIRequest) string {
+	switch {
+	case coldToolContinuation:
+		return "cold_continuation"
+	case hasCheckpoint:
+		return "checkpoint"
+	case parsed != nil && len(parsed.Turns) > 0:
+		return "flatten"
+	default:
+		return "fresh"
+	}
 }
 
 // dumpCursorPayload writes the translated OpenAI payload to the directory in
@@ -861,6 +974,8 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		flattenConversationIntoUserText(parsed)
 		params = buildRunRequestParams(parsed, conversationId, req.Model)
 	}
+	continuity := resolveCursorContinuity(coldToolContinuation, hasCheckpoint && saved != nil && saved.data != nil && saved.authID == authID, parsed)
+	dumpCursorRequestFingerprint(parsed, params, continuity, conversationId)
 	requestBytes := cursorproto.EncodeRunRequest(params)
 	framedRequest := cursorproto.FrameConnectMessage(requestBytes, 0)
 
@@ -879,7 +994,11 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 	if openAICompatible {
 		sessionParent = ctx
 	}
-	sessionCtx, sessionCancel := context.WithCancel(sessionParent)
+	sessionCtx, sessionCancel := context.WithCancel(contextWithCursorAudit(sessionParent, cursorAuditMeta{
+		ConversationID: conversationId,
+		Model:          req.Model,
+		Continuity:     continuity,
+	}))
 	if !e.attachConversationStream(conversationId, streamOwner, sessionCancel, stream) {
 		sessionCancel()
 		stream.Close()
@@ -1141,31 +1260,25 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		if openAICompatible && openAIToolCallsEmitted {
 			sendChunkSwitchable(`{}`, `"tool_calls"`)
 			sendDoneSwitchable()
-			inTok, outTok := usage.get()
-			reporter.Publish(ctx, coreusage.Detail{
-				InputTokens:  inTok,
-				OutputTokens: outTok,
-				TotalTokens:  inTok + outTok,
-			})
+			reporter.Publish(ctx, usage.detail())
 			closeCurrentOutput()
 			sessionCancel()
 			stream.Close()
 			return
 		}
 
-		// Include token usage in the final stop chunk
-		inputTok, outputTok := usage.get()
-		reporter.Publish(ctx, coreusage.Detail{
-			InputTokens:  inputTok,
-			OutputTokens: outputTok,
-			TotalTokens:  inputTok + outputTok,
-		})
-		stopDelta := fmt.Sprintf(`{},"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}`,
-			inputTok, outputTok, inputTok+outputTok)
-		// Build the stop chunk with usage embedded in the choices array level
+		// Include token usage in the final stop chunk. Terminal TurnEnded
+		// usage wins over TokenDelta and the payload-size heuristic.
+		reporter.Publish(ctx, usage.detail())
+		usageJSON, err := json.Marshal(usage.openAIUsage())
+		if err != nil {
+			inTok, outTok := usage.get()
+			usageJSON = []byte(fmt.Sprintf(`{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}`,
+				inTok, outTok, inTok+outTok))
+		}
 		fr := `"stop"`
-		openaiJSON := fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"model":"%s","choices":[{"index":0,"delta":{},"finish_reason":%s}],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`,
-			chatId, created, parsed.Model, fr, inputTok, outputTok, inputTok+outputTok)
+		openaiJSON := fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"model":"%s","choices":[{"index":0,"delta":{},"finish_reason":%s}],"usage":%s}`,
+			chatId, created, parsed.Model, fr, usageJSON)
 		sseLine := []byte("data: " + openaiJSON + "\n")
 		if needsTranslate {
 			translated := sdktranslator.TranslateStream(ctx, to, from, req.Model, originalPayload, payload, sseLine, &streamParam)
@@ -1176,7 +1289,6 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 			emitToOut(cliproxyexecutor.StreamChunk{Payload: []byte(openaiJSON)})
 		}
 		sendDoneSwitchable()
-		_ = stopDelta // unused
 
 		// Close whatever output channel is still active
 		closeCurrentOutput()
@@ -1469,22 +1581,36 @@ func (c *cursorStreamCoalescer) run(
 	}
 }
 
-// cursorTokenUsage tracks token counts from Cursor's TokenDeltaUpdate messages.
+// cursorTokenUsage tracks token counts. Precedence:
+//
+//	TurnEndedUpdate terminal counters
+//	> TokenDeltaUpdate stream deltas
+//	> local payloadBytes/4 heuristic
+//
+// Unknown TurnEnded fields are never synthesized into zeros on the wire JSON.
 type cursorTokenUsage struct {
 	mu             sync.Mutex
 	outputTokens   int64
 	inputTokensEst int64 // estimated from request payload size
+	terminal       cursorproto.TurnEndedUsage
+	terminalSeen   bool
 }
 
 func (u *cursorTokenUsage) addOutput(delta int64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	if u.terminalSeen && u.terminal.HasOutput {
+		return
+	}
 	u.outputTokens += delta
 }
 
 func (u *cursorTokenUsage) setInputEstimate(payloadBytes int) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	if u.terminalSeen && u.terminal.HasInput {
+		return
+	}
 	// Rough estimate: ~4 bytes per token for mixed content
 	u.inputTokensEst = int64(payloadBytes / 4)
 	if u.inputTokensEst < 1 {
@@ -1492,10 +1618,107 @@ func (u *cursorTokenUsage) setInputEstimate(payloadBytes int) {
 	}
 }
 
+func (u *cursorTokenUsage) settleTurnEnded(term cursorproto.TurnEndedUsage) bool {
+	if u == nil || !term.HasAny() {
+		return false
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.terminalSeen {
+		return false
+	}
+	u.terminal = term
+	u.terminalSeen = true
+	return true
+}
+
 func (u *cursorTokenUsage) get() (input, output int64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.inputTokensEst, u.outputTokens
+	return u.inputLocked(), u.outputLocked()
+}
+
+func (u *cursorTokenUsage) inputLocked() int64 {
+	if u.terminalSeen && u.terminal.HasInput {
+		return u.terminal.InputTokens
+	}
+	return u.inputTokensEst
+}
+
+func (u *cursorTokenUsage) outputLocked() int64 {
+	if u.terminalSeen && u.terminal.HasOutput {
+		return u.terminal.OutputTokens
+	}
+	return u.outputTokens
+}
+
+func (u *cursorTokenUsage) sourceLocked() string {
+	if u.terminalSeen {
+		return "cursor_turn_ended"
+	}
+	if u.outputTokens > 0 {
+		return "token_delta"
+	}
+	return "payload_estimate"
+}
+
+func (u *cursorTokenUsage) openAIUsage() map[string]any {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	input := u.inputLocked()
+	output := u.outputLocked()
+	usage := map[string]any{
+		"prompt_tokens":     input,
+		"completion_tokens": output,
+		"total_tokens":      input + output,
+	}
+	if !u.terminalSeen {
+		return usage
+	}
+	if u.terminal.HasCacheRead {
+		promptDetails := map[string]any{"cached_tokens": u.terminal.CacheReadTokens}
+		if u.terminal.HasCacheWrite && u.terminal.CacheWriteTokens > 0 {
+			promptDetails["cache_write_tokens"] = u.terminal.CacheWriteTokens
+		}
+		usage["prompt_tokens_details"] = promptDetails
+	} else if u.terminal.HasCacheWrite && u.terminal.CacheWriteTokens > 0 {
+		usage["prompt_tokens_details"] = map[string]any{
+			"cache_write_tokens": u.terminal.CacheWriteTokens,
+		}
+	}
+	if u.terminal.HasReasoning {
+		usage["completion_tokens_details"] = map[string]any{
+			"reasoning_tokens": u.terminal.ReasoningTokens,
+		}
+	}
+	return usage
+}
+
+func (u *cursorTokenUsage) detail() coreusage.Detail {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	input := u.inputLocked()
+	output := u.outputLocked()
+	d := coreusage.Detail{
+		InputTokens:  input,
+		OutputTokens: output,
+		TotalTokens:  input + output,
+	}
+	if !u.terminalSeen {
+		return d
+	}
+	if u.terminal.HasCacheRead {
+		d.CacheReadTokens = u.terminal.CacheReadTokens
+		d.CachedTokens = u.terminal.CacheReadTokens
+	}
+	if u.terminal.HasCacheWrite {
+		d.CacheCreationTokens = u.terminal.CacheWriteTokens
+	}
+	if u.terminal.HasReasoning {
+		d.ReasoningTokens = u.terminal.ReasoningTokens
+	}
+	log.Debugf("cursor: usage_source=%s %s", u.sourceLocked(), u.terminal.DebugSummary())
+	return d
 }
 
 func processH2SessionFrames(
@@ -1750,7 +1973,7 @@ func processH2SessionFrames(
 					// Handled by caller
 
 				case cursorproto.ServerMsgTurnEnded:
-					log.Debugf("cursor: TurnEnded received, stream will finish")
+					observeTurnEnded(ctx, msg, tokenUsage)
 					// Defensive: if a tool burst was still buffered when the turn
 					// ended (OpenAI path), surface it before completing.
 					if len(toolBatch) > 0 && toolResultCh == nil && onToolBatch != nil {

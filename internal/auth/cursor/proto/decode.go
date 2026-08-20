@@ -71,6 +71,12 @@ type DecodedServerMessage struct {
 	// For TokenDeltaUpdate
 	TokenDelta int64
 
+	// For TurnEndedUpdate. The embedded agent.proto descriptor lists this
+	// message as empty; Cursor.app names the five varints (see TurnEndedUsage).
+	TurnEndedRaw    []byte
+	TurnEndedFields []WireField
+	TurnEndedUsage  TurnEndedUsage
+
 	// For conversation checkpoint update (raw bytes, not decoded)
 	CheckpointData []byte
 }
@@ -165,28 +171,32 @@ func decodeInteractionUpdate(data []byte, msg *DecodedServerMessage) {
 			case IU_ThinkingCompleted:
 				msg.Type = ServerMsgThinkingCompleted
 				log.Debugf("decodeInteractionUpdate: ThinkingCompleted")
-			case 2:
+			case IU_ToolCallStarted:
 				// tool_call_started - ignore but log
 				log.Debugf("decodeInteractionUpdate: ToolCallStarted (ignored)")
-			case 3:
+			case IU_ToolCallCompleted:
 				// tool_call_completed - ignore but log
 				log.Debugf("decodeInteractionUpdate: ToolCallCompleted (ignored)")
-			case 8:
+			case IU_TokenDelta:
 				// token_delta - extract token count
 				msg.Type = ServerMsgTokenDelta
 				msg.TokenDelta = decodeVarintField(val, 1)
-				log.Debugf("decodeInteractionUpdate: TokenDeltaUpdate tokens=%d", msg.TokenDelta)
-			case 13:
+				log.Debugf("decodeInteractionUpdate: TokenDeltaUpdate tokens=%d fields=%v", msg.TokenDelta, InspectProtoFields(val))
+			case IU_Heartbeat:
 				// heartbeat from server
 				msg.Type = ServerMsgHeartbeat
-			case 14:
-				// turn_ended - critical: model finished generating
+			case IU_TurnEnded:
+				// turn_ended - critical: model finished generating.
+				// Nested varints are Cursor.app TurnEnded usage (see TurnEndedUsage).
 				msg.Type = ServerMsgTurnEnded
-				log.Debugf("decodeInteractionUpdate: TurnEndedUpdate - stream should end")
-			case 16:
+				msg.TurnEndedRaw = append([]byte(nil), val...)
+				msg.TurnEndedFields = InspectProtoFields(val)
+				msg.TurnEndedUsage = DecodeTurnEndedUsage(val, msg.TurnEndedFields)
+				log.Debugf("decodeInteractionUpdate: TurnEndedUpdate %s hex=%s", msg.TurnEndedUsage.DebugSummary(), hex.EncodeToString(val))
+			case IU_StepStarted:
 				// step_started - ignore
 				log.Debugf("decodeInteractionUpdate: StepStartedUpdate (ignored)")
-			case 17:
+			case IU_StepCompleted:
 				// step_completed - ignore
 				log.Debugf("decodeInteractionUpdate: StepCompletedUpdate (ignored)")
 			default:
