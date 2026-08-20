@@ -1734,6 +1734,10 @@ func processH2SessionFrames(
 	var buf bytes.Buffer
 	rejectReason := "Tool not available in this environment. Use the MCP tools provided instead."
 	log.Debugf("cursor: processH2SessionFrames started for streamID=%s, waiting for data...", stream.ID())
+	audit := cursorAuditFromContext(ctx)
+	obs := newCursorStallObserver(stream.ID(), audit.ConversationID, audit.Model, audit.Continuity)
+	finishReason := stallTerminalStreamEnd
+	defer func() { obs.finish(finishReason) }()
 
 	// Stall watchdog: fires when the upstream produces no content-bearing
 	// message for cursorNoProgressTimeout. Heartbeats deliberately do not feed
@@ -1808,20 +1812,24 @@ func processH2SessionFrames(
 		}
 
 		log.Debugf("cursor: waiting for %d tool result(s) on channel (inline mode)...", len(batch))
+		obs.pauseForToolWait()
 		var toolResults []toolResultInfo
 	waitLoop:
 		for {
 			select {
 			case <-ctx.Done():
+				finishReason = stallTerminalClientCancel
 				return false, ctx.Err()
 			case results, ok := <-toolResultCh:
 				if !ok {
+					finishReason = stallTerminalStreamEnd
 					return true, nil
 				}
 				toolResults = results
 				break waitLoop
 			case waitData, ok := <-stream.Data():
 				if !ok {
+					finishReason = stallTerminalStreamEnd
 					return false, stream.Err()
 				}
 				buf.Write(waitData)
@@ -1843,6 +1851,8 @@ func processH2SessionFrames(
 						continue
 					}
 					switch wmsg.Type {
+					case cursorproto.ServerMsgHeartbeat:
+						obs.noteHeartbeat()
 					case cursorproto.ServerMsgKvGetBlob:
 						blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
 						d := blobStore[blobKey]
@@ -1860,9 +1870,11 @@ func processH2SessionFrames(
 					}
 				}
 			case <-stream.Done():
+				finishReason = stallTerminalStreamEnd
 				return false, stream.Err()
 			}
 		}
+		obs.resumeAfterToolWait()
 
 		// Send an MCP result for every pending call in the batch. Results are
 		// matched to their originating call by tool_call_id.
@@ -1883,6 +1895,7 @@ func processH2SessionFrames(
 		select {
 		case <-ctx.Done():
 			log.Debugf("cursor: processH2SessionFrames exiting: context done")
+			finishReason = stallTerminalClientCancel
 			return ctx.Err()
 		case <-batchTimerC:
 			batchTimerC = nil
@@ -1891,6 +1904,7 @@ func processH2SessionFrames(
 				return err
 			}
 			if done {
+				finishReason = stallTerminalToolBatch
 				return nil
 			}
 			// The parked tool-result wait inside finalizeToolBatch is unbounded
@@ -1902,6 +1916,7 @@ func processH2SessionFrames(
 			// not WAITING_CLIENT_TOOL_RESULT.
 			log.Warnf("cursor: processH2SessionFrames[%s]: no upstream progress within %s (heartbeats only) generation_state=ACTIVE_MODEL pending_batch=%d tool_result_ch=%t last_semantic=%s heartbeats_since_semantic=%d — failing stalled stream",
 				stream.ID(), cursorNoProgressTimeout, len(toolBatch), toolResultCh != nil, lastSemanticKind, heartbeatsSinceSemantic)
+			finishReason = stallTerminalWatchdog
 			return cursorWatchdogErr(fmt.Sprintf("cursor: upstream stalled: no progress within %s", cursorNoProgressTimeout))
 		case data, ok := <-stream.Data():
 			if !ok {
@@ -1940,6 +1955,7 @@ func processH2SessionFrames(
 				if flags&cursorproto.ConnectEndStreamFlag != 0 {
 					if err := cursorproto.ParseConnectEndStream(payload); err != nil {
 						log.Warnf("cursor: connect end stream error: %v", err)
+						finishReason = stallTerminalUpstreamError
 						return err // propagate server-side errors (quota, rate limit, etc.)
 					}
 					continue
@@ -1956,8 +1972,10 @@ func processH2SessionFrames(
 					lastSemanticKind = cursorSemanticKind(msg.Type)
 					heartbeatsSinceSemantic = 0
 					resetProgressTimer()
+					obs.noteProgress(msg.Type)
 				} else {
 					heartbeatsSinceSemantic++
+					obs.noteHeartbeat()
 				}
 				switch msg.Type {
 				case cursorproto.ServerMsgTextDelta:
@@ -1980,6 +1998,7 @@ func processH2SessionFrames(
 						onToolBatch(toolBatch)
 						toolBatch = nil
 					}
+					finishReason = stallTerminalTurnEnded
 					return nil // clean completion
 
 				case cursorproto.ServerMsgHeartbeat:

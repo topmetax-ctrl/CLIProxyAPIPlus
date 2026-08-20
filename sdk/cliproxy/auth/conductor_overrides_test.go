@@ -1426,6 +1426,10 @@ func TestManager_UnknownUpstreamErrorRotatesAndPenalizesModelOnly(t *testing.T) 
 	}
 }
 
+func TestLocalCursorWatchdog504DoesNotCooldown(t *testing.T) {
+	TestManager_MarkResult_RequestScopedWatchdog504DoesNotCooldownAuth(t)
+}
+
 func TestManager_MarkResult_RequestScopedWatchdog504DoesNotCooldownAuth(t *testing.T) {
 	prevQuota := quotaCooldownDisabled.Load()
 	quotaCooldownDisabled.Store(false)
@@ -1467,6 +1471,10 @@ func TestManager_MarkResult_RequestScopedWatchdog504DoesNotCooldownAuth(t *testi
 	if state := updated.ModelStates[model]; state != nil && (!state.NextRetryAfter.IsZero() || state.Unavailable) {
 		t.Fatalf("local watchdog 504 must not cool (credential, model), got %#v", state)
 	}
+}
+
+func TestActualUpstreamCursor504StillCooldowns(t *testing.T) {
+	TestManager_MarkResult_Upstream504StillCoolsCredential(t)
 }
 
 func TestManager_MarkResult_Upstream504StillCoolsCredential(t *testing.T) {
