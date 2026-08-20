@@ -2,6 +2,7 @@ package executor
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
@@ -43,6 +44,29 @@ func TestClassifyCursorErrorConnectCodes(t *testing.T) {
 func TestClassifyCursorErrorNilPassthrough(t *testing.T) {
 	if err := classifyCursorError(nil); err != nil {
 		t.Fatalf("classifyCursorError(nil) = %v, want nil", err)
+	}
+}
+
+func TestClassifyCursorErrorPreservesWatchdogRequestScoped(t *testing.T) {
+	stall := cursorWatchdogErr("cursor: upstream stalled: no progress within 4m0s")
+	wrapped := classifyCursorError(fmt.Errorf("cursor: stream interrupted after partial response: %w", stall))
+	if got := statusOf(t, wrapped); got != 504 {
+		t.Fatalf("wrapped watchdog status = %d, want 504", got)
+	}
+	var scoped interface{ IsRequestScoped() bool }
+	if !errors.As(wrapped, &scoped) || scoped == nil || !scoped.IsRequestScoped() {
+		t.Fatalf("wrapped watchdog 504 lost request-scoped provenance: %T %v", wrapped, wrapped)
+	}
+}
+
+func TestClassifyCursorErrorUpstreamDeadlineIsNotRequestScoped(t *testing.T) {
+	err := classifyCursorError(&cursorproto.ConnectError{Code: "deadline_exceeded", Message: "upstream deadline"})
+	if got := statusOf(t, err); got != 504 {
+		t.Fatalf("upstream deadline status = %d, want 504", got)
+	}
+	var scoped interface{ IsRequestScoped() bool }
+	if errors.As(err, &scoped) && scoped != nil && scoped.IsRequestScoped() {
+		t.Fatalf("actual Cursor deadline_exceeded must still cool the credential, got %v", err)
 	}
 }
 

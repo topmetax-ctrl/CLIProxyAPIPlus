@@ -60,17 +60,22 @@ const (
 // Wire observation 2026-08-13: under account-level load Cursor sometimes parks
 // a stream forever, emitting only ~10s keepalives (or going fully silent
 // mid-generation), which would otherwise hang agent clients indefinitely.
-// 240s stays clear of legitimate slow turns — even 1.5MB payloads produce
-// their first frame within seconds — while failing fast enough that clients
-// (Claude Code times out at ~300s) can retry. Variable so tests can shorten
-// it; CURSOR_NO_PROGRESS_TIMEOUT_S overrides it at startup.
+// Live canary 2026-08-20 on cursor-grok-4.6-xhigh-fast: healthy turns still
+// stream thinking/text/tool every 1–12s (max gap 12s across 11 streams,
+// including a 158s generation with 1258 real events). Zombies sit in
+// ACTIVE_MODEL with heartbeats only for the full timeout — that is what
+// made the dashboard look “slow”, not the 4–20s healthy path. 60s is ~5×
+// the observed inter-semantic gap, so it cuts zombies from 4 minutes to
+// 1 minute without touching waitLoop (client tool-wait stays unbounded)
+// and without treating heartbeats as progress. Variable so tests can
+// shorten it; CURSOR_NO_PROGRESS_TIMEOUT_S overrides it at startup.
 var cursorNoProgressTimeout = func() time.Duration {
 	if s := os.Getenv("CURSOR_NO_PROGRESS_TIMEOUT_S"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
 			return time.Duration(n) * time.Second
 		}
 	}
-	return 240 * time.Second
+	return 60 * time.Second
 }()
 
 // CursorExecutor handles requests to the Cursor API via Connect+Protobuf protocol.
@@ -306,13 +311,44 @@ func (e *CursorExecutor) saveCheckpoint(conversationID string, owner *cursorStat
 // cursorStatusErr implements the StatusError and RetryAfter interfaces so the
 // conductor can classify Cursor errors (e.g. 429 → quota cooldown).
 type cursorStatusErr struct {
-	code int
-	msg  string
+	code          int
+	msg           string
+	requestScoped bool
 }
 
 func (e cursorStatusErr) Error() string              { return e.msg }
 func (e cursorStatusErr) StatusCode() int            { return e.code }
 func (e cursorStatusErr) RetryAfter() *time.Duration { return nil } // no retry-after info from Cursor; conductor uses exponential backoff
+func (e cursorStatusErr) IsRequestScoped() bool      { return e.requestScoped }
+
+// cursorWatchdogErr is a local stream-liveness abort. It surfaces as HTTP 504
+// to the client but must not cool the Cursor credential: the H2 socket may
+// still be receiving ServerMsgHeartbeat. Actual Cursor Connect deadline_exceeded
+// stays a non-scoped 504 via classifyCursorError.
+func cursorWatchdogErr(msg string) error {
+	return cursorStatusErr{code: 504, msg: msg, requestScoped: true}
+}
+
+func cursorSemanticKind(t cursorproto.ServerMessageType) string {
+	switch t {
+	case cursorproto.ServerMsgTextDelta:
+		return "text"
+	case cursorproto.ServerMsgThinkingDelta, cursorproto.ServerMsgThinkingCompleted:
+		return "thinking"
+	case cursorproto.ServerMsgExecMcpArgs:
+		return "tool"
+	case cursorproto.ServerMsgTurnEnded:
+		return "turn_ended"
+	case cursorproto.ServerMsgTokenDelta:
+		return "token"
+	case cursorproto.ServerMsgCheckpoint:
+		return "checkpoint"
+	case cursorproto.ServerMsgKvGetBlob, cursorproto.ServerMsgKvSetBlob:
+		return "kv"
+	default:
+		return fmt.Sprintf("type_%d", int(t))
+	}
+}
 
 // classifyCursorError maps Cursor Connect/H2 errors to HTTP status codes.
 // Layer 1: precise match on ConnectError.Code (gRPC standard codes).
@@ -321,6 +357,11 @@ func (e cursorStatusErr) RetryAfter() *time.Duration { return nil } // no retry-
 func classifyCursorError(err error) error {
 	if err == nil {
 		return nil
+	}
+
+	var existing cursorStatusErr
+	if errors.As(err, &existing) {
+		return err
 	}
 
 	// Layer 1: structured ConnectError from ParseConnectEndStream
@@ -1479,6 +1520,8 @@ func processH2SessionFrames(
 	// silence is legitimate and unbounded) and re-armed once results are sent.
 	progressTimer := time.NewTimer(cursorNoProgressTimeout)
 	defer progressTimer.Stop()
+	lastSemanticKind := "none"
+	heartbeatsSinceSemantic := 0
 	resetProgressTimer := func() {
 		if !progressTimer.Stop() {
 			select {
@@ -1632,8 +1675,12 @@ func processH2SessionFrames(
 			// by design; give the model a fresh window now that results are in.
 			resetProgressTimer()
 		case <-progressTimer.C:
-			log.Warnf("cursor: processH2SessionFrames[%s]: no upstream progress within %s (heartbeats only) — failing stalled stream", stream.ID(), cursorNoProgressTimeout)
-			return cursorStatusErr{code: 504, msg: fmt.Sprintf("cursor: upstream stalled: no progress within %s", cursorNoProgressTimeout)}
+			// This select is unreachable while finalizeToolBatch is parked in
+			// waitLoop, so a fire here is ACTIVE_MODEL (or ACTIVE_AFTER_TOOL_RESULT),
+			// not WAITING_CLIENT_TOOL_RESULT.
+			log.Warnf("cursor: processH2SessionFrames[%s]: no upstream progress within %s (heartbeats only) generation_state=ACTIVE_MODEL pending_batch=%d tool_result_ch=%t last_semantic=%s heartbeats_since_semantic=%d — failing stalled stream",
+				stream.ID(), cursorNoProgressTimeout, len(toolBatch), toolResultCh != nil, lastSemanticKind, heartbeatsSinceSemantic)
+			return cursorWatchdogErr(fmt.Sprintf("cursor: upstream stalled: no progress within %s", cursorNoProgressTimeout))
 		case data, ok := <-stream.Data():
 			if !ok {
 				log.Debugf("cursor: processH2SessionFrames[%s]: exiting: stream data channel closed", stream.ID())
@@ -1684,7 +1731,11 @@ func processH2SessionFrames(
 
 				log.Debugf("cursor: decoded server message type=%d", msg.Type)
 				if msg.Type != cursorproto.ServerMsgHeartbeat {
+					lastSemanticKind = cursorSemanticKind(msg.Type)
+					heartbeatsSinceSemantic = 0
 					resetProgressTimer()
+				} else {
+					heartbeatsSinceSemantic++
 				}
 				switch msg.Type {
 				case cursorproto.ServerMsgTextDelta:

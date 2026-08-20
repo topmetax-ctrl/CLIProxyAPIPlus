@@ -1426,6 +1426,84 @@ func TestManager_UnknownUpstreamErrorRotatesAndPenalizesModelOnly(t *testing.T) 
 	}
 }
 
+func TestManager_MarkResult_RequestScopedWatchdog504DoesNotCooldownAuth(t *testing.T) {
+	prevQuota := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	prevTransient := transientErrorCooldownSeconds.Load()
+	SetTransientErrorCooldownSeconds(15)
+	t.Cleanup(func() {
+		quotaCooldownDisabled.Store(prevQuota)
+		transientErrorCooldownSeconds.Store(prevTransient)
+	})
+
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-local-watchdog-504", Provider: "cursor"}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	model := "cursor-grok-4.6-xhigh-fast"
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    model,
+		Success:  false,
+		Error: resultErrorFromError(&requestScopedStatusError{
+			status:  http.StatusGatewayTimeout,
+			message: "cursor: upstream stalled: no progress within 4m0s",
+		}),
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("expected auth to be present")
+	}
+	if updated.Unavailable {
+		t.Fatal("local watchdog 504 must not mark the credential unavailable")
+	}
+	if !updated.NextRetryAfter.IsZero() {
+		t.Fatalf("local watchdog 504 must not set auth cooldown, got %v", updated.NextRetryAfter)
+	}
+	if state := updated.ModelStates[model]; state != nil && (!state.NextRetryAfter.IsZero() || state.Unavailable) {
+		t.Fatalf("local watchdog 504 must not cool (credential, model), got %#v", state)
+	}
+}
+
+func TestManager_MarkResult_Upstream504StillCoolsCredential(t *testing.T) {
+	prevQuota := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	prevTransient := transientErrorCooldownSeconds.Load()
+	SetTransientErrorCooldownSeconds(15)
+	t.Cleanup(func() {
+		quotaCooldownDisabled.Store(prevQuota)
+		transientErrorCooldownSeconds.Store(prevTransient)
+	})
+
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-upstream-504", Provider: "cursor"}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	model := "cursor-grok-4.6-xhigh-fast"
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    model,
+		Success:  false,
+		Error:    &Error{HTTPStatus: http.StatusGatewayTimeout, Message: "gateway timeout"},
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("expected auth to be present")
+	}
+	state := updated.ModelStates[model]
+	if state == nil || state.NextRetryAfter.IsZero() {
+		t.Fatal("actual upstream 504 must still apply transient cooldown")
+	}
+}
+
 func TestManager_MarkResult_RequestScopedNotFoundDoesNotCooldownAuth(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 

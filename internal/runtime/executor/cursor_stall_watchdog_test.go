@@ -2,11 +2,21 @@ package executor
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
 	cursorproto "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor/proto"
 )
+
+func TestCursorNoProgressTimeoutDefaultIsOneMinute(t *testing.T) {
+	if os.Getenv("CURSOR_NO_PROGRESS_TIMEOUT_S") != "" {
+		t.Skip("CURSOR_NO_PROGRESS_TIMEOUT_S overrides the compiled default")
+	}
+	if cursorNoProgressTimeout != 60*time.Second {
+		t.Fatalf("default cursorNoProgressTimeout = %s, want 1m0s so zombie ACTIVE_MODEL streams fail in ~1m not 4m", cursorNoProgressTimeout)
+	}
+}
 
 // heartbeatFrame is the wire form of a server heartbeat:
 // AgentServerMessage{ interaction_update{ heartbeat(field 13) } }.
@@ -65,6 +75,10 @@ func TestCursorStallWatchdogFailsHeartbeatOnlyStream(t *testing.T) {
 		se, ok := err.(interface{ StatusCode() int })
 		if !ok || se.StatusCode() != 504 {
 			t.Fatalf("expected 504 stall error, got %v", err)
+		}
+		scoped, ok := err.(interface{ IsRequestScoped() bool })
+		if !ok || !scoped.IsRequestScoped() {
+			t.Fatalf("local stall 504 must be request-scoped so it does not cool the credential, got %T %v", err, err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("watchdog did not fire on heartbeat-only stream")
