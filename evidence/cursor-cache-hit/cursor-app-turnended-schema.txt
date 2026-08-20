@@ -1,0 +1,33 @@
+Source: /Applications/Cursor.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js
+Extracted 2026-08-20. Generated protobuf-es message type, not inferred.
+
+nSi=A.makeMessageType("agent.v1.TurnEndedUpdate",()=>[
+  {no:1,name:"input_tokens",kind:"scalar",T:3,opt:!0},
+  {no:2,name:"output_tokens",kind:"scalar",T:3,opt:!0},
+  {no:3,name:"cache_read_tokens",kind:"scalar",T:3,opt:!0},
+  {no:4,name:"cache_write_tokens",kind:"scalar",T:3,opt:!0},
+  {no:5,name:"reasoning_tokens",kind:"scalar",T:3,opt:!0}
+])
+
+T:3 = protobuf ScalarType.INT64.
+
+Same message type is present in:
+- workbench.glass.main.js
+- extensions/cursor-always-local/dist/main.js
+- extensions/cursor-local-agent-runtime/dist/main.js
+  Zn.typeName="agent.v1.TurnEndedUpdate"
+  Zn.fields=... same five optional int64 fields
+
+Official Cursor SDK docs (https://cursor.com/docs/sdk/typescript) independently
+name TurnEndedUpdate.usage as:
+  inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens?
+
+The embedded alma-plugins descriptor in this repo still lists TurnEndedUpdate as
+empty. Live/golden wire already carried these five varints. Cursor.app is the
+authoritative field-number mapping.
+
+Independent confirmation:
+1. AUTHORITATIVE — Cursor.app generated descriptor + official SDK names
+2. Billing / Cursor dashboard — not correlated in this phase
+3. Differential live matrix — field 3 rises on same-prefix continuation and
+   drops when the early prefix changes; field 2 scales with output

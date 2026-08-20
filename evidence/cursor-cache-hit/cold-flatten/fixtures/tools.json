@@ -1,0 +1,18 @@
+{
+  "openai": [
+    {
+      "type": "function",
+      "function": {
+        "name": "echo_mock",
+        "description": "Echo text. Do not call unless asked.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string" }
+          },
+          "required": ["text"]
+        }
+      }
+    }
+  ]
+}

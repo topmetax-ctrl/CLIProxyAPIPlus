@@ -1,0 +1,22 @@
+{
+  "same_semantic_conversation": true,
+  "only_continuation_path_differs": true,
+  "system_sha256": "70b827d55f548319fec31eaeaf9b97f7ff1924f9024f52ebaf484aa7069981b2",
+  "tools_sha256": "2b169f7259221bed1fe335d732cd77c541ccc585908211b94538134c6f1ff445",
+  "warm_http_reps": 5,
+  "cold_http_reps": 5,
+  "warm_turnended_t2": 4,
+  "cold_turnended_t2": 3,
+  "warm_t2_cache_read": [11392, 9088, 2944, 9088],
+  "cold_t2_cache_read": [11392, 11392, 0],
+  "warm_median_cache_read": 9088.0,
+  "cold_median_cache_read": 11392,
+  "warm_min": 2944,
+  "warm_max": 11392,
+  "cold_min": 0,
+  "cold_max": 11392,
+  "difference_cold_minus_warm_median": 2304.0,
+  "reproducible_cold_reduction": false,
+  "causal_degradation": false,
+  "first_prefix_divergence": "history serialization: checkpoint+short UserText vs flattenConversationIntoUserText transcript"
+}

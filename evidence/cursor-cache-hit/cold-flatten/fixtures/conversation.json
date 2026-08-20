@@ -1,0 +1,5 @@
+{
+  "turn1_user": "Reply with exactly the token PONG-1 and nothing else.",
+  "turn2_user": "Reply with exactly the token PONG-2 and nothing else.",
+  "assistant_placeholder": "PONG-1"
+}
