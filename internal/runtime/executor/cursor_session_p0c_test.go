@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -172,7 +171,7 @@ func TestCursorSession_ExpiredGenerationDoesNotCorruptLiveGeneration(t *testing.
 	}
 }
 
-func TestCursorSession_MixedToolResultsRejected(t *testing.T) {
+func TestCursorSession_MixedToolResultsRejectedWithZeroMutation(t *testing.T) {
 	idA := normalizeToolCallID("p0c-mixed-A")
 	idB := normalizeToolCallID("p0c-mixed-B")
 	sessionID := "p0c-mixed"
@@ -181,12 +180,39 @@ func TestCursorSession_MixedToolResultsRejected(t *testing.T) {
 	p0cMustPark(t, e, conv, key, owner, "gen-B", "req-B", idB)
 
 	err := p0cSendResults(e, sessionID, "req-mixed", idA, idB)
-	if err == nil || !errors.Is(err, errMixedToolResultGenerations) && !strings.Contains(err.Error(), "MIXED_TOOL_RESULT_GENERATIONS") {
-		t.Fatalf("mixed-generation results error = %v, want MIXED_TOOL_RESULT_GENERATIONS", err)
+	if err == nil || !strings.Contains(err.Error(), "MIXED_TOOL_RESULT_GENERATIONS") {
+		t.Fatalf("last-turn IDs spanning two pending generations error = %v, want MIXED", err)
 	}
 	live := e.livePendingToolIDs(key)
 	if !p0cContains(live, idA) || !p0cContains(live, idB) {
-		t.Fatalf("mixed reject must not consume either generation: live=%v", live)
+		t.Fatalf("mixed last-turn must not mutate pending: live=%v", live)
+	}
+}
+
+func TestCursorSession_LastTurnResultsIgnoreOlderPendingGeneration(t *testing.T) {
+	idA := normalizeToolCallID("p0c-lastturn-A")
+	idB := normalizeToolCallID("p0c-lastturn-B")
+	sessionID := "p0c-last-turn"
+	e, conv, key, owner := p0cExecutor(sessionID)
+	p0cMustPark(t, e, conv, key, owner, "gen-A", "req-A", idA)
+	p0cMustPark(t, e, conv, key, owner, "gen-B", "req-B", idB)
+
+	payload := p0cClaudeHistoryThenCurrentPayload(sessionID, idA, idB)
+	_, err := e.ExecuteStream(
+		logging.WithRequestID(context.Background(), "req-last-turn"),
+		cursorTestAuth(),
+		cliproxyexecutor.Request{Model: "cursor-test-model", Payload: payload},
+		p0bClaudeOpts(payload),
+	)
+	if err != nil {
+		t.Fatalf("last user turn with only gen-B results should not MIXED: %v", err)
+	}
+	live := e.livePendingToolIDs(key)
+	if p0cContains(live, idB) {
+		t.Fatal("current-turn gen-B should be consumed")
+	}
+	if !p0cContains(live, idA) {
+		t.Fatal("historical gen-A must stay pending")
 	}
 }
 
@@ -234,6 +260,42 @@ func p0cSendResults(e *CursorExecutor, sessionID, requestID string, ids ...strin
 		p0bClaudeOpts(payload),
 	)
 	return err
+}
+
+func p0cCommitResults(e *CursorExecutor, sessionID string, ids ...string) {
+	conv := deriveConversationId("", sessionID, "")
+	key := "cursor-test:" + conv
+	e.commitToolResults(key, ids, true)
+}
+
+func p0cInterruptResults(e *CursorExecutor, sessionID string, err error, ids ...string) {
+	conv := deriveConversationId("", sessionID, "")
+	key := "cursor-test:" + conv
+	e.interruptToolResults(key, ids, err)
+}
+
+func p0cClaudeHistoryThenCurrentPayload(sessionID, historyID, currentID string) []byte {
+	return p0bMustJSON(map[string]any{
+		"model":      "cursor-test-model",
+		"max_tokens": 128,
+		"stream":     true,
+		"metadata":   map[string]any{"user_id": p0bUserID(sessionID)},
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": historyID, "name": "read", "input": map[string]any{"path": "old.md"}},
+			}},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": historyID, "content": "old"},
+			}},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": currentID, "name": "read", "input": map[string]any{"path": "new.md"}},
+			}},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": currentID, "content": "new"},
+			}},
+		},
+	})
 }
 
 func p0cClaudeResultsPayload(sessionID string, ids []string) []byte {

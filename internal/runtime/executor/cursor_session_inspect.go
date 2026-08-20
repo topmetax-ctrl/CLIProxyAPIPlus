@@ -82,7 +82,7 @@ func (e *CursorExecutor) expireStaleSessionsLocked(expired *[]cursorSessionRepla
 			}
 		}
 		e.gcConsumedIndexLocked(state, now)
-		if len(state.generations) == 0 && len(state.pendingIndex) == 0 && len(state.consumedIndex) == 0 {
+		if len(state.generations) == 0 && len(state.pendingIndex) == 0 && len(state.resultIndex) == 0 {
 			delete(e.conversations, key)
 		}
 	}
@@ -110,8 +110,8 @@ func (e *CursorExecutor) consumedToolIDs(sessionKey string) []string {
 	if state == nil {
 		return nil
 	}
-	ids := make([]string, 0, len(state.consumedIndex))
-	for toolID := range state.consumedIndex {
+	ids := make([]string, 0, len(state.resultIndex))
+	for toolID := range state.resultIndex {
 		ids = append(ids, toolID)
 	}
 	return ids
@@ -135,12 +135,12 @@ func (e *CursorExecutor) backdateConsumed(sessionKey, toolID string, age time.Du
 	if state == nil {
 		return
 	}
-	ref, ok := state.consumedIndex[toolID]
-	if !ok {
+	rec, ok := state.resultIndex[toolID]
+	if !ok || rec == nil {
 		return
 	}
-	ref.consumedAt = time.Now().Add(-age)
-	state.consumedIndex[toolID] = ref
+	rec.lastTransitionAt = time.Now().Add(-age)
+	rec.claimedAt = rec.lastTransitionAt
 }
 
 func (e *CursorExecutor) conversationInvariantError() error {

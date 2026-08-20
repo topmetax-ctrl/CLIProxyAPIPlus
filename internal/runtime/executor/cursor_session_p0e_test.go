@@ -23,6 +23,8 @@ func TestCursorLocalSessionErrorsAreRequestScoped(t *testing.T) {
 	}{
 		{name: "mixed", err: cursorLocalError(localMixedGeneration, http.StatusConflict, errMixedToolResultGenerations), class: localMixedGeneration, status: http.StatusConflict},
 		{name: "duplicate", err: cursorLocalError(localDuplicateResult, http.StatusConflict, errToolResultAlreadyConsumed), class: localDuplicateResult, status: http.StatusConflict},
+		{name: "in_flight", err: cursorLocalError(localInFlightResult, http.StatusConflict, errToolResultInFlight), class: localInFlightResult, status: http.StatusConflict},
+		{name: "final_rejected", err: cursorLocalError(localFinalRejectedResult, http.StatusBadRequest, errToolResultFinalRejected), class: localFinalRejectedResult, status: http.StatusBadRequest},
 		{name: "not_found", err: cursorLocalError(localToolResultNotFound, http.StatusBadRequest, errToolResultNotFound), class: localToolResultNotFound, status: http.StatusBadRequest},
 		{name: "mismatch", err: cursorLocalError(localSessionStateMismatch, http.StatusBadRequest, errToolResultMismatch), class: localSessionStateMismatch, status: http.StatusBadRequest},
 	}
@@ -56,28 +58,6 @@ func TestCursorExecutor_LocalToolResultErrorsDoNotMutateOrCooldown(t *testing.T)
 		run  func(t *testing.T, e *CursorExecutor, sessionID string) error
 	}{
 		{
-			name: "mixed_generation",
-			run: func(t *testing.T, e *CursorExecutor, sessionID string) error {
-				idA := normalizeToolCallID("p0e-mixed-A")
-				idB := normalizeToolCallID("p0e-mixed-B")
-				conv, key, owner := p0eBind(e, sessionID)
-				p0cMustPark(t, e, conv, key, owner, "gen-A", "req-A", idA)
-				p0cMustPark(t, e, conv, key, owner, "gen-B", "req-B", idB)
-				err := p0cSendResults(e, sessionID, "req-mixed", idA, idB)
-				if !errors.Is(err, errMixedToolResultGenerations) {
-					t.Fatalf("mixed error = %v", err)
-				}
-				live := e.livePendingToolIDs(key)
-				if !p0cContains(live, idA) || !p0cContains(live, idB) {
-					t.Fatalf("mixed reject mutated pending: %v", live)
-				}
-				if consumed := e.consumedToolIDs(key); len(consumed) != 0 {
-					t.Fatalf("mixed reject consumed tools: %v", consumed)
-				}
-				return err
-			},
-		},
-		{
 			name: "duplicate_consumed",
 			run: func(t *testing.T, e *CursorExecutor, sessionID string) error {
 				idA := normalizeToolCallID("p0e-dup-A")
@@ -86,9 +66,26 @@ func TestCursorExecutor_LocalToolResultErrorsDoNotMutateOrCooldown(t *testing.T)
 				if err := p0cSendResults(e, sessionID, "req-A-result", idA); err != nil {
 					t.Fatalf("first consume failed: %v", err)
 				}
+				p0cCommitResults(e, sessionID, idA)
 				err := p0cSendResults(e, sessionID, "req-A-retry", idA)
 				if !errors.Is(err, errToolResultAlreadyConsumed) {
 					t.Fatalf("duplicate error = %v", err)
+				}
+				return err
+			},
+		},
+		{
+			name: "in_flight",
+			run: func(t *testing.T, e *CursorExecutor, sessionID string) error {
+				idA := normalizeToolCallID("p0e-inflight-A")
+				conv, key, owner := p0eBind(e, sessionID)
+				p0cMustPark(t, e, conv, key, owner, "gen-A", "req-A", idA)
+				if err := p0cSendResults(e, sessionID, "req-A-result", idA); err != nil {
+					t.Fatalf("first consume failed: %v", err)
+				}
+				err := p0cSendResults(e, sessionID, "req-A-retry", idA)
+				if !errors.Is(err, errToolResultInFlight) {
+					t.Fatalf("in-flight error = %v", err)
 				}
 				return err
 			},
@@ -106,26 +103,6 @@ func TestCursorExecutor_LocalToolResultErrorsDoNotMutateOrCooldown(t *testing.T)
 				}
 				if !p0cContains(e.livePendingToolIDs(key), idA) {
 					t.Fatal("unknown reject consumed gen-A")
-				}
-				return err
-			},
-		},
-		{
-			name: "known_and_unknown_atomic",
-			run: func(t *testing.T, e *CursorExecutor, sessionID string) error {
-				idA := normalizeToolCallID("p0e-known-A")
-				idX := normalizeToolCallID("p0e-known-X")
-				conv, key, owner := p0eBind(e, sessionID)
-				p0cMustPark(t, e, conv, key, owner, "gen-A", "req-A", idA)
-				err := p0cSendResults(e, sessionID, "req-partial-unknown", idA, idX)
-				if !errors.Is(err, errToolResultNotFound) {
-					t.Fatalf("known+unknown error = %v", err)
-				}
-				if !p0cContains(e.livePendingToolIDs(key), idA) {
-					t.Fatal("known+unknown reject consumed gen-A")
-				}
-				if consumed := e.consumedToolIDs(key); len(consumed) != 0 {
-					t.Fatalf("known+unknown reject consumed tools: %v", consumed)
 				}
 				return err
 			},
@@ -148,6 +125,33 @@ func TestCursorExecutor_LocalToolResultErrorsDoNotMutateOrCooldown(t *testing.T)
 	}
 }
 
+func TestCursorExecutor_TranscriptExtrasResumeCurrentGeneration(t *testing.T) {
+	idA := normalizeToolCallID("p0e-hist-A")
+	idB := normalizeToolCallID("p0e-hist-B")
+	sessionID := "p0e-transcript-extras"
+	e := NewCursorExecutor(nil)
+	conv, key, owner := p0eBind(e, sessionID)
+	p0cMustPark(t, e, conv, key, owner, "gen-A", "req-A", idA)
+	if err := p0cSendResults(e, sessionID, "req-A-result", idA); err != nil {
+		t.Fatalf("consume gen-A: %v", err)
+	}
+	p0cCommitResults(e, sessionID, idA)
+	p0cMustPark(t, e, conv, key, owner, "gen-B", "req-B", idB)
+	payload := p0cClaudeHistoryThenCurrentPayload(sessionID, idA, idB)
+	_, err := e.ExecuteStream(
+		logging.WithRequestID(context.Background(), "req-B-with-history"),
+		cursorTestAuth(),
+		cliproxyexecutor.Request{Model: "cursor-test-model", Payload: payload},
+		p0bClaudeOpts(payload),
+	)
+	if err != nil {
+		t.Fatalf("transcript history must not 409 MIXED against the current pending generation: %v", err)
+	}
+	if p0cContains(e.livePendingToolIDs(key), idB) {
+		t.Fatal("gen-B should be consumed")
+	}
+}
+
 func TestCursorLocalSessionErrorsDoNotCooldownAccount(t *testing.T) {
 	cliproxyauth.SetQuotaCooldownDisabled(false)
 	cliproxyauth.SetTransientErrorCooldownSeconds(5)
@@ -156,6 +160,8 @@ func TestCursorLocalSessionErrorsDoNotCooldownAccount(t *testing.T) {
 	localErrors := []error{
 		cursorLocalError(localMixedGeneration, http.StatusConflict, errMixedToolResultGenerations),
 		cursorLocalError(localDuplicateResult, http.StatusConflict, errToolResultAlreadyConsumed),
+		cursorLocalError(localInFlightResult, http.StatusConflict, errToolResultInFlight),
+		cursorLocalError(localFinalRejectedResult, http.StatusBadRequest, errToolResultFinalRejected),
 		cursorLocalError(localToolResultNotFound, http.StatusBadRequest, errToolResultNotFound),
 		cursorLocalError(localSessionStateMismatch, http.StatusBadRequest, errToolResultMismatch),
 	}
@@ -300,22 +306,24 @@ func p0eBind(e *CursorExecutor, sessionID string) (string, string, *cursorStateO
 
 func TestCursorExecutor_LocalErrorsPropagateRequestIDContext(t *testing.T) {
 	idA := normalizeToolCallID("p0e-ctx-A")
-	idB := normalizeToolCallID("p0e-ctx-B")
+	idX := normalizeToolCallID("p0e-ctx-X")
 	sessionID := "p0e-request-id"
 	e, conv, key, owner := p0cExecutor(sessionID)
 	p0cMustPark(t, e, conv, key, owner, "gen-A", "req-A", idA)
-	p0cMustPark(t, e, conv, key, owner, "gen-B", "req-B", idB)
-	payload := p0cClaudeResultsPayload(sessionID, []string{idA, idB})
+	payload := p0cClaudeResultsPayload(sessionID, []string{idX})
 	_, err := e.ExecuteStream(
-		logging.WithRequestID(context.Background(), "req-mixed-consumer"),
+		logging.WithRequestID(context.Background(), "req-unknown-consumer"),
 		cursorTestAuth(),
 		cliproxyexecutor.Request{Model: "cursor-test-model", Payload: payload},
 		p0bClaudeOpts(payload),
 	)
-	if !errors.Is(err, errMixedToolResultGenerations) {
+	if !errors.Is(err, errToolResultNotFound) {
 		t.Fatalf("error = %v", err)
 	}
 	if !isCursorLocalSessionError(err) {
-		t.Fatalf("mixed error lost local classification: %T", err)
+		t.Fatalf("unknown error lost local classification: %T", err)
+	}
+	if !p0cContains(e.livePendingToolIDs(key), idA) {
+		t.Fatal("unknown reject consumed gen-A")
 	}
 }

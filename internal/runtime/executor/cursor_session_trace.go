@@ -30,6 +30,12 @@ var (
 	cursorGenerationResolveTotal                   atomic.Int64
 	cursorSessionConsumedGCTotal                   atomic.Int64
 	cursorSessionConsumedIndexEntries              atomic.Int64
+	cursorToolResultClaimTotal                     atomic.Int64
+	cursorToolResultReplayTotal                    atomic.Int64
+	cursorToolResultCommitTotal                    atomic.Int64
+	cursorToolResultInFlightConflictTotal          atomic.Int64
+	cursorToolResultFinalRejectTotal               atomic.Int64
+	cursorToolResultStaleClaimRecoveredTotal       atomic.Int64
 )
 
 // CursorSessionReplaceWithPendingTotal reports how many times a parked
@@ -70,6 +76,17 @@ func CursorSessionConsumedGCTotal() int64 {
 
 func CursorSessionConsumedIndexEntries() int64 {
 	return cursorSessionConsumedIndexEntries.Load()
+}
+
+func CursorToolResultClaimTotal() int64  { return cursorToolResultClaimTotal.Load() }
+func CursorToolResultReplayTotal() int64 { return cursorToolResultReplayTotal.Load() }
+func CursorToolResultCommitTotal() int64 { return cursorToolResultCommitTotal.Load() }
+func CursorToolResultInFlightConflictTotal() int64 {
+	return cursorToolResultInFlightConflictTotal.Load()
+}
+func CursorToolResultFinalRejectTotal() int64 { return cursorToolResultFinalRejectTotal.Load() }
+func CursorToolResultStaleClaimRecoveredTotal() int64 {
+	return cursorToolResultStaleClaimRecoveredTotal.Load()
 }
 
 type cursorSessionReplaceEvent struct {

@@ -181,8 +181,8 @@ type cursorSession struct {
 	state              generationState
 	expiryWarned       bool
 	// finished is set when the H2 worker for this generation has returned.
-	// Duplicate tool-result retries 409 only while the continuation is still
-	// live; after a stall/close they must start a new stream instead.
+	// A retry of REPLAYABLE results then cold-continues the original
+	// generation instead of injecting into a dead stream.
 	finished bool
 }
 
@@ -788,34 +788,47 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		log.Infof("cursor: using cold continuation for %d tool result(s)", len(parsed.ToolResults))
 	}
 
-	// Native Claude requests correlate tool results to the exact parked
-	// generation via (sessionKey, toolCallID). A later generation must not
-	// steal an earlier pending batch.
+	// Native Claude requests correlate the last-turn tool-result frontier to
+	// the original generation. PENDING/REPLAYABLE IDs are claimed atomically
+	// into IN_FLIGHT. A dead H2 stream is a cold continuation of that
+	// generation, never a resume of the stale transport and never a
+	// newest-generation fallback.
+	var claimed *toolResultClaim
 	if len(parsed.ToolResults) > 0 && !coldToolContinuation {
 		incoming := incomingToolCallIDs(lastTurnToolResults(parsed))
 		if len(incoming) == 0 && parsed.UserText == "" {
 			incoming = incomingToolCallIDs(parsed.ToolResults)
 		}
 		if len(incoming) > 0 {
-			session, errResolve := e.resolveGenerationForToolResults(sessionKey, incoming)
-			if errResolve != nil {
-				return nil, errResolve
+			claim, errClaim := e.claimToolResults(sessionKey, logging.GetRequestID(ctx), incoming)
+			if errClaim != nil {
+				return nil, errClaim
 			}
+			claimed = claim
+			session := claim.session
 			if session != nil {
 				e.noteGenerationRestore(session)
 				logCursorSessionRestore(sessionKey, logging.GetRequestID(ctx), snapshotCursorSession(session))
-				if session.stream != nil && session.authID == authID {
-					log.Debugf("cursor: resuming generation %s for %d tool results", session.generationID, len(parsed.ToolResults))
-					result, errResume := e.resumeWithToolResults(ctx, sessionKey, session, parsed, from, to, req, originalPayload, payload, needsTranslate)
-					if errResume == nil {
-						reporter.EnsurePublished(ctx)
-					}
-					return result, errResume
-				}
 				if session.authID != authID {
 					log.Warnf("cursor: generation %s belongs to auth %s, but request is from %s — skipping resume", session.generationID, session.authID, authID)
+					e.unclaimToolResults(sessionKey, claim, claim.previousPending)
+					claimed = nil
+				} else if !claim.cold && session.stream != nil {
+					log.Debugf("cursor: resuming generation %s for %d tool results", session.generationID, len(claim.ids))
+					result, errResume := e.resumeWithToolResults(ctx, sessionKey, session, parsed, from, to, req, originalPayload, payload, needsTranslate, claim)
+					if errResume != nil {
+						e.unclaimToolResults(sessionKey, claim, claim.previousPending)
+						return nil, errResume
+					}
+					reporter.EnsurePublished(ctx)
+					return result, nil
+				} else {
+					log.Infof("cursor: cold-continuing generation %s (%d tool result(s)); not reusing a stale H2 stream", claim.generationID, len(claim.ids))
 				}
-			} else if otherKey := e.findConversationKeyByIDLockedSafe(conversationId); otherKey != "" && otherKey != sessionKey {
+			} else {
+				log.Infof("cursor: cold-continuing generation %s (%d tool result(s)); parked session is gone", claim.generationID, len(claim.ids))
+			}
+			if otherKey := e.findConversationKeyByIDLockedSafe(conversationId); otherKey != "" && otherKey != sessionKey {
 				log.Infof("cursor: other-auth conversation %s still has parked generations for conv=%s; leaving them in place", otherKey, conversationId)
 			}
 		}
@@ -876,11 +889,17 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 
 	stream, err := e.openStream(accessToken)
 	if err != nil {
+		if claimed != nil {
+			e.unclaimToolResults(sessionKey, claimed, claimed.previousPending)
+		}
 		return nil, err
 	}
 
 	if err := stream.Write(framedRequest); err != nil {
 		stream.Close()
+		if claimed != nil {
+			e.finishClaimedToolResults(sessionKey, claimed.ids, err, false)
+		}
 		return nil, fmt.Errorf("cursor: failed to send request: %w", err)
 	}
 	// The Cursor stream lives only for this HTTP request when serving an
@@ -982,9 +1001,11 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 	var outputStarted atomic.Bool
 
 	origEmitToOut := emitToOut
+	var emitFailed atomic.Bool
 	emitToOut = func(chunk cliproxyexecutor.StreamChunk) bool {
 		liveness.noteDownstreamWrite()
 		if !origEmitToOut(chunk) {
+			emitFailed.Store(true)
 			return false
 		}
 		outputStarted.Store(true)
@@ -993,6 +1014,11 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		default:
 		}
 		return true
+	}
+
+	coldReplayIDs := make([]string, 0)
+	if claimed != nil {
+		coldReplayIDs = append(coldReplayIDs, claimed.ids...)
 	}
 
 	workerOwnsState = true
@@ -1006,6 +1032,13 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		openAIToolCallsEmitted := false
 		usage := &cursorTokenUsage{}
 		usage.setInputEstimate(len(payload))
+		var parkedGenID string
+		activeColdIDs := append([]string(nil), coldReplayIDs...)
+		finishActiveToolResults := func(streamErr error, delivered bool) {
+			ids := e.inflightResultIDs(sessionKey, parkedGenID)
+			ids = append(ids, activeColdIDs...)
+			e.finishClaimedToolResults(sessionKey, ids, streamErr, delivered)
+		}
 
 		emitTextDelta := func(text string, isThinking bool) {
 			// Emit thinking as the standard OpenAI `reasoning_content` delta
@@ -1066,6 +1099,14 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 				// exec, then close the current output.
 				sendChunkSwitchable(`{}`, `"tool_calls"`)
 				sendDoneSwitchable()
+				delivered := !emitFailed.Load()
+				if parkedGenID != "" {
+					e.finishClaimedToolResults(sessionKey, e.inflightResultIDs(sessionKey, parkedGenID), nil, delivered)
+				}
+				if len(activeColdIDs) > 0 {
+					e.finishClaimedToolResults(sessionKey, activeColdIDs, nil, delivered)
+					activeColdIDs = nil
+				}
 				resumeOut := make(chan cliproxyexecutor.StreamChunk, 64)
 				log.Debugf("cursor: saving session %s for MCP tool resume (%d pending call(s))", sessionKey, len(execs))
 				outMu.Lock()
@@ -1097,6 +1138,7 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 					stream.Close()
 					return
 				}
+				parkedGenID = session.generationID
 				resumeOutCh = resumeOut
 
 				// Publish and close under the output lock. An immediate resume can
@@ -1128,13 +1170,12 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 			},
 		)
 		streamCoalescer.close()
+		e.markStreamGenerationsFinished(conversationId, stream)
 
 		// processH2SessionFrames returned — stream is done.
 		// Check if error happened before any chunks were emitted.
 		if streamErr != nil {
-			// Mark finished before the client sees the error so a retry of
-			// already-consumed tool results starts a new stream instead of 409.
-			e.markStreamGenerationsFinished(conversationId, stream)
+			finishActiveToolResults(streamErr, false)
 			if outputStarted.Load() {
 				// Partial output must never be presented as a successful stop.
 				log.Warnf("cursor: stream error after data sent (auth=%s conv=%s): %v", authID, conversationId, streamErr)
@@ -1153,6 +1194,9 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 				return
 			}
 		}
+
+		delivered := !emitFailed.Load()
+		finishActiveToolResults(nil, delivered)
 
 		// OpenAI-compatible parallel tool calls: the batch was emitted as deltas
 		// during processing; close the turn with a single tool_calls boundary
@@ -1208,6 +1252,9 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 	// return an error so the conductor retries with a different auth.
 	select {
 	case streamErr := <-streamErrCh:
+		if claimed != nil {
+			e.finishClaimedToolResults(sessionKey, claimed.ids, streamErr, false)
+		}
 		return nil, classifyCursorError(fmt.Errorf("cursor: stream failed before response: %w", streamErr))
 	case <-firstChunkSent:
 		// Data started flowing — return stream to client
@@ -1216,6 +1263,9 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		// No response was committed, so the request owns teardown. Without this
 		// branch a canceled client can leave ExecuteStream waiting forever while
 		// the detached Cursor session and heartbeat remain alive.
+		if claimed != nil {
+			e.finishClaimedToolResults(sessionKey, claimed.ids, ctx.Err(), false)
+		}
 		closeCurrentOutput()
 		sessionCancel()
 		stream.Close()
@@ -1237,6 +1287,7 @@ func (e *CursorExecutor) resumeWithToolResults(
 	req cliproxyexecutor.Request,
 	originalPayload, payload []byte,
 	needsTranslate bool,
+	claim *toolResultClaim,
 ) (*cliproxyexecutor.StreamResult, error) {
 	log.Debugf("cursor: resumeWithToolResults: injecting %d tool results via channel", len(parsed.ToolResults))
 
@@ -1270,17 +1321,33 @@ func (e *CursorExecutor) resumeWithToolResults(
 	}
 	incomingIDs := incomingToolCallIDs(parsed.ToolResults)
 	pendingIDs := pendingToolCallIDs(session.pending)
+	if claim != nil {
+		pendingIDs = append([]string(nil), claim.ids...)
+	}
 	logCursorToolResultMatch(sessionKey, logging.GetRequestID(ctx), snapshotCursorSession(session), pendingIDs, incomingIDs)
 	matchedPending := false
-	for _, result := range parsed.ToolResults {
-		for _, pending := range session.pending {
-			if result.ToolCallId == pending.ToolCallId {
+	if claim != nil {
+		claimedSet := make(map[string]struct{}, len(claim.ids))
+		for _, id := range claim.ids {
+			claimedSet[id] = struct{}{}
+		}
+		for _, result := range parsed.ToolResults {
+			if _, ok := claimedSet[result.ToolCallId]; ok {
 				matchedPending = true
 				break
 			}
 		}
-		if matchedPending {
-			break
+	} else {
+		for _, result := range parsed.ToolResults {
+			for _, pending := range session.pending {
+				if result.ToolCallId == pending.ToolCallId {
+					matchedPending = true
+					break
+				}
+			}
+			if matchedPending {
+				break
+			}
 		}
 	}
 	if !matchedPending {
@@ -1288,7 +1355,11 @@ func (e *CursorExecutor) resumeWithToolResults(
 		return nil, cursorLocalError(localSessionStateMismatch, http.StatusBadRequest, errToolResultMismatch)
 	}
 	previousPending := append([]pendingMcpExec(nil), session.pending...)
-	e.consumeToolResults(sessionKey, session, incomingIDs)
+	if claim != nil {
+		previousPending = append([]pendingMcpExec(nil), claim.previousPending...)
+	} else {
+		e.consumeToolResults(sessionKey, session, incomingIDs)
+	}
 
 	log.Debugf("cursor: resumeWithToolResults: switching output to resumeOutCh and injecting results")
 
@@ -1303,10 +1374,20 @@ func (e *CursorExecutor) resumeWithToolResults(
 	select {
 	case session.toolResultCh <- parsed.ToolResults:
 	case <-ctx.Done():
-		e.restoreConsumedToolResults(sessionKey, session, previousPending)
+		if claim != nil {
+			e.unclaimToolResults(sessionKey, claim, previousPending)
+		} else {
+			e.restoreConsumedToolResults(sessionKey, session, previousPending)
+		}
 		restoreSession()
 		return nil, ctx.Err()
 	}
+
+	startedIDs := incomingIDs
+	if claim != nil {
+		startedIDs = claim.ids
+	}
+	e.markToolResultsUpstreamStarted(sessionKey, startedIDs)
 
 	// Return the resumeOutCh for the new HTTP handler to read from
 	return &cliproxyexecutor.StreamResult{Chunks: session.resumeOutCh}, nil

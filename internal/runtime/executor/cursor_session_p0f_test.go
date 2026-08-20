@@ -1,14 +1,19 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
-func TestCursorSession_MixedToolResultsRejectedWithoutMutation(t *testing.T) {
+func TestCursorSession_MixedLastTurnRejectedWithoutMutation(t *testing.T) {
 	idA := normalizeToolCallID("p0f-mixed-mut-A")
 	idB := normalizeToolCallID("p0f-mixed-mut-B")
 	sessionID := "p0f-mixed-mutation"
@@ -16,36 +21,67 @@ func TestCursorSession_MixedToolResultsRejectedWithoutMutation(t *testing.T) {
 	p0cMustPark(t, e, conv, key, owner, "gen-A", "req-A", idA)
 	p0cMustPark(t, e, conv, key, owner, "gen-B", "req-B", idB)
 
-	if err := p0cSendResults(e, sessionID, "req-mixed", idA, idB); err == nil {
-		t.Fatal("expected MIXED_TOOL_RESULT_GENERATIONS")
+	err := p0cSendResults(e, sessionID, "req-mixed", idA, idB)
+	if err == nil || !strings.Contains(err.Error(), "MIXED_TOOL_RESULT_GENERATIONS") {
+		t.Fatalf("mixed last-turn error = %v, want MIXED", err)
 	}
 	live := e.livePendingToolIDs(key)
 	if !p0cContains(live, idA) || !p0cContains(live, idB) {
-		t.Fatalf("mixed resolve mutated pending: %v", live)
-	}
-	if consumed := e.consumedToolIDs(key); len(consumed) != 0 {
-		t.Fatalf("mixed resolve consumed tools: %v", consumed)
+		t.Fatalf("mixed last-turn must not mutate pending: live=%v", live)
 	}
 	if err := e.conversationInvariantError(); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestCursorSession_KnownAndUnknownToolResultsAreAtomic(t *testing.T) {
+func TestCursorSession_KnownAndUnknownLastTurnFailsWithZeroMutation(t *testing.T) {
 	idA := normalizeToolCallID("p0f-atomic-A")
 	idX := normalizeToolCallID("p0f-atomic-X")
 	sessionID := "p0f-known-unknown"
 	e, conv, key, owner := p0cExecutor(sessionID)
 	p0cMustPark(t, e, conv, key, owner, "gen-A", "req-A", idA)
 
-	if err := p0cSendResults(e, sessionID, "req-known-unknown", idA, idX); err == nil {
-		t.Fatal("expected TOOL_RESULT_NOT_FOUND")
+	err := p0cSendResults(e, sessionID, "req-known-unknown", idA, idX)
+	if err == nil || !strings.Contains(err.Error(), "TOOL_RESULT_NOT_FOUND") {
+		t.Fatalf("known+unknown last-turn error = %v, want NOT_FOUND", err)
 	}
 	if !p0cContains(e.livePendingToolIDs(key), idA) {
-		t.Fatal("known+unknown consume must not commit tool-A")
+		t.Fatal("known+unknown last-turn must not claim tool-A")
 	}
-	if consumed := e.consumedToolIDs(key); p0cContains(consumed, idA) {
-		t.Fatal("known+unknown left a consumed tombstone for tool-A")
+	if p0cContains(e.consumedToolIDs(key), idA) || p0cContains(e.consumedToolIDs(key), idX) {
+		t.Fatal("known+unknown last-turn must not mutate resultIndex")
+	}
+}
+
+func TestCursorSession_HistoricalCommittedIDsDoNotMixGenerations(t *testing.T) {
+	idA := normalizeToolCallID("p0f-history-A")
+	idB := normalizeToolCallID("p0f-history-B")
+	sessionID := "p0f-history-consumed"
+	e, conv, key, owner := p0cExecutor(sessionID)
+	p0cMustPark(t, e, conv, key, owner, "gen-A", "req-A", idA)
+	if err := p0cSendResults(e, sessionID, "req-A-result", idA); err != nil {
+		t.Fatalf("consume gen-A: %v", err)
+	}
+	p0cCommitResults(e, sessionID, idA)
+	p0cMustPark(t, e, conv, key, owner, "gen-B", "req-B", idB)
+
+	payload := p0cClaudeHistoryThenCurrentPayload(sessionID, idA, idB)
+	_, err := e.ExecuteStream(
+		logging.WithRequestID(context.Background(), "req-B-with-history"),
+		cursorTestAuth(),
+		cliproxyexecutor.Request{Model: "cursor-test-model", Payload: payload},
+		p0bClaudeOpts(payload),
+	)
+	if err != nil {
+		t.Fatalf("historical COMMITTED A in transcript must be ignored: %v", err)
+	}
+	live := e.livePendingToolIDs(key)
+	if p0cContains(live, idB) {
+		t.Fatal("gen-B pending survived the current-turn match")
+	}
+	consumed := e.consumedToolIDs(key)
+	if !p0cContains(consumed, idA) || !p0cContains(consumed, idB) {
+		t.Fatalf("resultIndex missing history or current: %v", consumed)
 	}
 }
 
@@ -136,6 +172,7 @@ func TestCursorSession_ConsumedIndexGC(t *testing.T) {
 	if err := p0cSendResults(e, sessionID, "req-A-result", idA); err != nil {
 		t.Fatalf("consume failed: %v", err)
 	}
+	p0cCommitResults(e, sessionID, idA)
 	if !p0cContains(e.consumedToolIDs(key), idA) {
 		t.Fatal("expected consumed tombstone")
 	}
@@ -232,7 +269,7 @@ func TestCursorSession_RandomizedStateMachine(t *testing.T) {
 			} else {
 				gens[idx] = item
 			}
-		case 5: // duplicate a consumed ID if any remain in an index
+		case 5: // duplicate a consumed ID: 409 while the gen is live, miss if it already finished
 			if len(gens) == 0 {
 				continue
 			}
@@ -241,9 +278,15 @@ func TestCursorSession_RandomizedStateMachine(t *testing.T) {
 			if len(consumed) == 0 {
 				continue
 			}
-			_, err := e.resolveGenerationForToolResults(item.key, []string{consumed[0]})
-			if err == nil || !isCursorLocalSessionError(err) {
-				t.Fatalf("op %d duplicate got %v", i, err)
+			session, err := e.resolveGenerationForToolResults(item.key, []string{consumed[0]})
+			if err != nil {
+				if !isCursorLocalSessionError(err) {
+					t.Fatalf("op %d duplicate got %v", i, err)
+				}
+				break
+			}
+			if session != nil {
+				t.Fatalf("op %d duplicate resumed generation %s", i, session.generationID)
 			}
 		case 6: // unknown / mixed must not mutate
 			if len(gens) < 2 {
@@ -259,9 +302,9 @@ func TestCursorSession_RandomizedStateMachine(t *testing.T) {
 				break
 			}
 			before := append([]string(nil), e.livePendingToolIDs(a.key)...)
-			_, err := e.resolveGenerationForToolResults(a.key, []string{a.ids[0], b.ids[0]})
+			session, err := e.resolveGenerationForToolResults(a.key, []string{a.ids[0], b.ids[0]})
 			if err == nil || !isCursorLocalSessionError(err) {
-				t.Fatalf("op %d mixed got %v", i, err)
+				t.Fatalf("op %d mixed resolve = session=%v err=%v, want MIXED", i, session, err)
 			}
 			after := e.livePendingToolIDs(a.key)
 			if len(before) != len(after) {

@@ -1,6 +1,6 @@
 # Cursor H2 stream liveness (P0-K1)
 
-Status: **implemented** in working tree. Replay-safe consumed results are **P0-K2** (not this change).
+Status: **implemented**. Replay-safe tool-result recovery is **P0-K2** (`reports/CURSOR_TOOL_RESULT_LIFECYCLE.md`).
 
 ## 09:47 heartbeats were upstream
 
@@ -43,4 +43,4 @@ Config (`cursor:` in YAML, or `CURSOR_TRANSPORT_IDLE_TIMEOUT_S` / `CURSOR_SEMANT
 
 ## Not P0-K1
 
-Duplicate `TOOL_RESULT_ALREADY_CONSUMED` after a nonterminal 504 is P0-K2: claimed/in-flight vs committed vs replayable, retry into the **same** generation, no newest-generation fallback.
+Duplicate `TOOL_RESULT_ALREADY_CONSUMED` after a nonterminal 504 is handled in P0-K2: `IN_FLIGHT` / `COMMITTED` / `REPLAYABLE`, retry into the **same** generation, no newest-generation fallback. See `reports/CURSOR_TOOL_RESULT_LIFECYCLE.md`.

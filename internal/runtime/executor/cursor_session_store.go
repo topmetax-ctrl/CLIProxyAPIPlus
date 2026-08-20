@@ -2,7 +2,6 @@ package executor
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -37,15 +36,10 @@ func (s generationState) String() string {
 	}
 }
 
-type consumedToolRef struct {
-	generationID string
-	consumedAt   time.Time
-}
-
 type conversationState struct {
-	generations   map[string]*cursorSession
-	pendingIndex  map[string]string
-	consumedIndex map[string]consumedToolRef
+	generations  map[string]*cursorSession
+	pendingIndex map[string]string
+	resultIndex  map[string]*toolResultRecord
 }
 
 func (e *CursorExecutor) ensureConversationLocked(sessionKey string) *conversationState {
@@ -54,9 +48,9 @@ func (e *CursorExecutor) ensureConversationLocked(sessionKey string) *conversati
 		return state
 	}
 	state = &conversationState{
-		generations:   make(map[string]*cursorSession),
-		pendingIndex:  make(map[string]string),
-		consumedIndex: make(map[string]consumedToolRef),
+		generations:  make(map[string]*cursorSession),
+		pendingIndex: make(map[string]string),
+		resultIndex:  make(map[string]*toolResultRecord),
 	}
 	e.conversations[sessionKey] = state
 	return state
@@ -104,12 +98,12 @@ func (e *CursorExecutor) parkGeneration(conversationID, sessionKey string, owner
 			e.mu.Unlock()
 			return false
 		}
-		if ref, exists := state.consumedIndex[item.ToolCallId]; exists && ref.generationID != session.generationID {
+		if rec, exists := state.resultIndex[item.ToolCallId]; exists && rec.generationID != session.generationID {
 			log.WithFields(log.Fields{
 				"event":            "cursor_session_duplicate_consumed_tool_id",
 				"session_key_hash": hashCursorSessionKey(sessionKey),
 				"generation_id":    session.generationID,
-			}).Warn("cursor pending tool ID still has a consumed tombstone from another generation")
+			}).Warn("cursor pending tool ID still has a result record from another generation")
 			e.mu.Unlock()
 			return false
 		}
@@ -134,72 +128,7 @@ func (e *CursorExecutor) resolveGenerationForToolResults(sessionKey string, inco
 }
 
 func (e *CursorExecutor) resolveGenerationForToolResultsLocked(sessionKey string, incoming []string) (*cursorSession, error) {
-	state := e.conversations[sessionKey]
-	if state == nil {
-		cursorSessionGenerationLookupMissTotal.Add(1)
-		return nil, nil
-	}
-	pendingGens := make(map[string]struct{})
-	consumedGens := make(map[string]struct{})
-	pendingHits := 0
-	consumedHits := 0
-	unknownHits := 0
-	for _, id := range uniqueSortedStrings(incoming) {
-		if genID, ok := state.pendingIndex[id]; ok {
-			pendingGens[genID] = struct{}{}
-			pendingHits++
-			continue
-		}
-		if ref, ok := state.consumedIndex[id]; ok {
-			consumedGens[ref.generationID] = struct{}{}
-			consumedHits++
-			continue
-		}
-		unknownHits++
-	}
-	if len(pendingGens) > 1 {
-		cursorToolResultMixedGenerationTotal.Add(1)
-		return nil, cursorLocalError(localMixedGeneration, http.StatusConflict, errMixedToolResultGenerations)
-	}
-	if len(pendingGens) == 1 && len(consumedGens) > 0 {
-		var pendingID string
-		for id := range pendingGens {
-			pendingID = id
-		}
-		for id := range consumedGens {
-			if id != pendingID {
-				cursorToolResultMixedGenerationTotal.Add(1)
-				return nil, cursorLocalError(localMixedGeneration, http.StatusConflict, errMixedToolResultGenerations)
-			}
-		}
-	}
-	if unknownHits > 0 {
-		cursorSessionGenerationLookupMissTotal.Add(1)
-		return nil, cursorLocalError(localToolResultNotFound, http.StatusBadRequest, errToolResultNotFound)
-	}
-	if pendingHits == 0 && consumedHits > 0 {
-		if len(consumedGens) > 1 {
-			cursorToolResultMixedGenerationTotal.Add(1)
-			return nil, cursorLocalError(localMixedGeneration, http.StatusConflict, errMixedToolResultGenerations)
-		}
-		cursorGenerationDuplicateResultTotal.Add(1)
-		return nil, cursorLocalError(localDuplicateResult, http.StatusConflict, errToolResultAlreadyConsumed)
-	}
-	if len(pendingGens) == 0 {
-		cursorSessionGenerationLookupMissTotal.Add(1)
-		return nil, cursorLocalError(localToolResultNotFound, http.StatusBadRequest, errToolResultNotFound)
-	}
-	var genID string
-	for id := range pendingGens {
-		genID = id
-	}
-	session := state.generations[genID]
-	if session == nil {
-		cursorSessionGenerationLookupMissTotal.Add(1)
-		return nil, cursorLocalError(localToolResultNotFound, http.StatusBadRequest, errToolResultNotFound)
-	}
-	cursorGenerationResolveTotal.Add(1)
-	return session, nil
+	return e.inspectToolResultsLocked(sessionKey, incoming)
 }
 
 func (e *CursorExecutor) noteGenerationRestore(session *cursorSession) {
@@ -221,38 +150,8 @@ func (e *CursorExecutor) consumeToolResults(sessionKey string, session *cursorSe
 }
 
 func (e *CursorExecutor) consumeToolResultsLocked(sessionKey string, session *cursorSession, incoming []string) {
-	if session == nil {
-		return
-	}
-	state := e.conversations[sessionKey]
-	if state == nil {
-		return
-	}
-	incomingSet := make(map[string]struct{}, len(incoming))
-	for _, id := range incoming {
-		if id != "" {
-			incomingSet[id] = struct{}{}
-		}
-	}
-	remaining := session.pending[:0]
-	now := time.Now()
-	for _, item := range session.pending {
-		if _, ok := incomingSet[item.ToolCallId]; ok {
-			delete(state.pendingIndex, item.ToolCallId)
-			state.consumedIndex[item.ToolCallId] = consumedToolRef{generationID: session.generationID, consumedAt: now}
-			continue
-		}
-		remaining = append(remaining, item)
-	}
-	session.pending = remaining
-	session.updatedAt = now
-	if len(session.pending) == 0 {
-		session.state = generationConsumed
-		session.consumedAt = now
-	} else {
-		session.state = generationPartiallyConsumed
-	}
-	e.refreshConsumedIndexGaugeLocked()
+	_, _ = e.claimToolResultsLocked(sessionKey, "", incoming)
+	_ = session
 }
 
 func (e *CursorExecutor) restoreConsumedToolResults(sessionKey string, session *cursorSession, previous []pendingMcpExec) {
@@ -273,7 +172,7 @@ func (e *CursorExecutor) restoreConsumedToolResults(sessionKey string, session *
 		if item.ToolCallId == "" {
 			continue
 		}
-		delete(state.consumedIndex, item.ToolCallId)
+		delete(state.resultIndex, item.ToolCallId)
 		state.pendingIndex[item.ToolCallId] = session.generationID
 	}
 	state.generations[session.generationID] = session
@@ -365,9 +264,21 @@ func (e *CursorExecutor) gcConsumedIndexLocked(state *conversationState, now tim
 	if state == nil {
 		return
 	}
-	for toolID, ref := range state.consumedIndex {
-		if now.Sub(ref.consumedAt) > cursorConsumedIndexTTL {
-			delete(state.consumedIndex, toolID)
+	e.recoverStaleClaimsLocked(state, now)
+	for toolID, rec := range state.resultIndex {
+		if rec == nil {
+			delete(state.resultIndex, toolID)
+			continue
+		}
+		if rec.state != resultCommitted && rec.state != resultFinalRejected {
+			continue
+		}
+		anchor := rec.lastTransitionAt
+		if anchor.IsZero() {
+			anchor = rec.claimedAt
+		}
+		if now.Sub(anchor) > cursorConsumedIndexTTL {
+			delete(state.resultIndex, toolID)
 			cursorSessionConsumedGCTotal.Add(1)
 		}
 	}
@@ -376,7 +287,7 @@ func (e *CursorExecutor) gcConsumedIndexLocked(state *conversationState, now tim
 func (e *CursorExecutor) refreshConsumedIndexGaugeLocked() {
 	n := 0
 	for _, state := range e.conversations {
-		n += len(state.consumedIndex)
+		n += len(state.resultIndex)
 	}
 	cursorSessionConsumedIndexEntries.Store(int64(n))
 }
@@ -402,8 +313,8 @@ func (e *CursorExecutor) conversationInvariantErrorLocked() error {
 				if indexed := state.pendingIndex[toolID]; indexed != genID {
 					return fmt.Errorf("%s: pending tool %s owned by %s, index=%s", key, toolID, genID, indexed)
 				}
-				if _, consumed := state.consumedIndex[toolID]; consumed {
-					return fmt.Errorf("%s: tool %s is both pending and consumed", key, toolID)
+				if rec := state.resultIndex[toolID]; rec != nil {
+					return fmt.Errorf("%s: tool %s is both pending and %s", key, toolID, rec.state)
 				}
 				if prev, exists := owned[toolID]; exists && prev != genID {
 					return fmt.Errorf("%s: tool %s owned by both %s and %s", key, toolID, prev, genID)
@@ -418,8 +329,8 @@ func (e *CursorExecutor) conversationInvariantErrorLocked() error {
 			if state.generations[genID] == nil {
 				return fmt.Errorf("%s: pendingIndex tool %s points at missing generation %s", key, toolID, genID)
 			}
-			if _, consumed := state.consumedIndex[toolID]; consumed {
-				return fmt.Errorf("%s: tool %s is both pendingIndex and consumedIndex", key, toolID)
+			if rec := state.resultIndex[toolID]; rec != nil {
+				return fmt.Errorf("%s: tool %s is both pendingIndex and %s", key, toolID, rec.state)
 			}
 		}
 	}

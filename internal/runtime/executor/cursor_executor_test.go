@@ -676,6 +676,7 @@ func TestCursorResumeCancellationRestoresSession(t *testing.T) {
 		nil,
 		nil,
 		false,
+		nil,
 	)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("resumeWithToolResults() error = %v, want context.Canceled", err)
@@ -711,6 +712,7 @@ func TestCursorResumeInvalidSessionIsDiscarded(t *testing.T) {
 		nil,
 		nil,
 		false,
+		nil,
 	)
 	if err == nil || !strings.Contains(err.Error(), "no toolResultCh") {
 		t.Fatalf("resumeWithToolResults() error = %v", err)
@@ -750,6 +752,7 @@ func TestCursorResumeRejectsUnmatchedToolResultAndRestoresSession(t *testing.T) 
 		nil,
 		nil,
 		false,
+		nil,
 	)
 	if err == nil || !strings.Contains(err.Error(), "do not match") {
 		t.Fatalf("resumeWithToolResults() error = %v", err)

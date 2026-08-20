@@ -16,11 +16,15 @@ const (
 	localToolResultNotFound   cursorLocalErrorClass = "LOCAL_TOOL_RESULT_NOT_FOUND"
 	localMixedGeneration      cursorLocalErrorClass = "LOCAL_MIXED_GENERATION"
 	localDuplicateResult      cursorLocalErrorClass = "LOCAL_DUPLICATE_RESULT"
+	localInFlightResult       cursorLocalErrorClass = "LOCAL_IN_FLIGHT_RESULT"
+	localFinalRejectedResult  cursorLocalErrorClass = "LOCAL_FINAL_REJECTED_RESULT"
 )
 
 var (
 	errMixedToolResultGenerations = errors.New("cursor: MIXED_TOOL_RESULT_GENERATIONS")
 	errToolResultAlreadyConsumed  = errors.New("cursor: TOOL_RESULT_ALREADY_CONSUMED")
+	errToolResultInFlight         = errors.New("cursor: TOOL_RESULT_IN_FLIGHT")
+	errToolResultFinalRejected    = errors.New("cursor: TOOL_RESULT_FINAL_REJECTED")
 	errToolResultNotFound         = errors.New("cursor: TOOL_RESULT_NOT_FOUND")
 	errToolResultMismatch         = errors.New("cursor: tool results do not match any pending tool call")
 	errSessionMissingToolChannel  = errors.New("cursor: session has no toolResultCh (stale session?)")

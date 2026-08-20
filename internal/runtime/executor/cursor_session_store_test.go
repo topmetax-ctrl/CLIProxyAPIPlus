@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCursorSession_RandomizedOverlappingGenerations(t *testing.T) {
@@ -58,8 +59,41 @@ func TestCursorSession_DuplicateConsumedResult(t *testing.T) {
 	if err := p0cSendResults(e, sessionID, "req-A-result", idA); err != nil {
 		t.Fatalf("first consume failed: %v", err)
 	}
+	p0cCommitResults(e, sessionID, idA)
 	err := p0cSendResults(e, sessionID, "req-A-retry", idA)
 	if err == nil || !strings.Contains(err.Error(), "TOOL_RESULT_ALREADY_CONSUMED") {
 		t.Fatalf("duplicate result error = %v, want TOOL_RESULT_ALREADY_CONSUMED", err)
+	}
+}
+
+func TestCursorSession_ReplayableResultsOnFinishedStreamKeepOriginalGeneration(t *testing.T) {
+	idA := normalizeToolCallID("p0c-dead-A")
+	sessionID := "p0c-dead-stream"
+	e, conv, key, owner := p0cExecutor(sessionID)
+	p0cMustPark(t, e, conv, key, owner, "gen-A", "req-A", idA)
+	if err := p0cSendResults(e, sessionID, "req-A-result", idA); err != nil {
+		t.Fatalf("first consume failed: %v", err)
+	}
+	p0cInterruptResults(e, sessionID, cursorWatchdogErr(cursorReasonTransportIdle, time.Second), idA)
+	e.mu.Lock()
+	if state := e.conversations[key]; state != nil {
+		if session := state.generations["gen-A"]; session != nil {
+			session.finished = true
+		}
+	}
+	e.mu.Unlock()
+	session, err := e.resolveGenerationForToolResults(key, []string{idA})
+	if err != nil {
+		t.Fatalf("replayable retry error = %v, want original generation", err)
+	}
+	if session == nil || session.generationID != "gen-A" {
+		t.Fatalf("replayable retry resolved %#v, want gen-A", session)
+	}
+	claim, err := e.claimToolResults(key, "req-A-retry", []string{idA})
+	if err != nil {
+		t.Fatalf("replayable claim error = %v", err)
+	}
+	if claim.generationID != "gen-A" || !claim.cold {
+		t.Fatalf("claim = gen=%s cold=%v, want gen-A cold continuation", claim.generationID, claim.cold)
 	}
 }
