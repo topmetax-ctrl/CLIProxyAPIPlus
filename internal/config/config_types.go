@@ -192,6 +192,16 @@ type AntigravityConfig struct {
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
 }
 
+// CursorConfig configures native Cursor AgentService H2 stream liveness.
+// Zero values keep the executor package defaults (240s transport idle and
+// semantic warning, 30m max duration). Set max-stream-duration-seconds to -1
+// to disable the hard cap.
+type CursorConfig struct {
+	TransportIdleTimeoutSeconds int `yaml:"transport-idle-timeout-seconds,omitempty" json:"transport-idle-timeout-seconds,omitempty"`
+	SemanticIdleWarningSeconds  int `yaml:"semantic-idle-warning-seconds,omitempty" json:"semantic-idle-warning-seconds,omitempty"`
+	MaxStreamDurationSeconds    int `yaml:"max-stream-duration-seconds,omitempty" json:"max-stream-duration-seconds,omitempty"`
+}
+
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`

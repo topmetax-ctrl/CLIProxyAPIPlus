@@ -27,7 +27,8 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - `internal/api/` — Gin HTTP API (routes, middleware, modules)
 - `internal/api/modules/amp/` — Amp integration (Amp-style routes + reverse proxy)
 - `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Do not break this "canonical representation → per-provider translation" architecture.
-- `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket)
+- `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket). Cursor H2 liveness is **inbound upstream frames only** (including `ServerMsgHeartbeat`). Local `ClientHeartbeat` writes and SSE keep-alives must not reset transport idle. Semantic silence is a warning, not a 504. Silent-stream / max-duration 504s must not cooldown the credential. See `reports/CURSOR_STREAM_LIVENESS.md`.
+
 - `internal/translator/` — Provider protocol translators (and shared `common`)
 - `internal/registry/` — Model registry + remote updater (`StartModelsUpdater`); `--local-model` disables remote updates
 - `internal/store/` — Storage implementations and secret resolution
@@ -55,4 +56,4 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Wrap defer errors: `defer func() { if err := f.Close(); err != nil { log.Errorf(...) } }()`
 - Use logrus structured logging; avoid leaking secrets/tokens in logs
 - Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
-- Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
+- Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, the `cmd/fetch_antigravity_models` utility timeouts, and the Cursor H2 **transport-idle** / **max-stream-duration** clocks in `internal/runtime/executor/cursor_executor.go` (inbound Cursor frames only; local ClientHeartbeat must not reset them; 504s are request-scoped)

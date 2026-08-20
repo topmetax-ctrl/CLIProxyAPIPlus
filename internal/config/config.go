@@ -180,6 +180,9 @@ type Config struct {
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
+	// Cursor configures native Cursor H2 stream liveness (P0-K1).
+	Cursor CursorConfig `yaml:"cursor" json:"cursor"`
+
 	// IncognitoBrowser opens OAuth URLs in an incognito/private browser window.
 	IncognitoBrowser bool `yaml:"incognito-browser" json:"incognito-browser"`
 

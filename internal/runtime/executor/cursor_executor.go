@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,18 +36,17 @@ import (
 )
 
 const (
-	cursorAPIURL            = "https://api2.cursor.sh"
-	cursorRunPath           = "/agent.v1.AgentService/Run"
-	cursorModelsPath        = "/agent.v1.AgentService/GetUsableModels"
-	cursorClientVersion     = "cli-2026.02.13-41ac335"
-	cursorAuthType          = "cursor"
-	cursorHeartbeatInterval = 5 * time.Second
-	cursorSessionTTL        = 5 * time.Minute
-	cursorSessionHardTTL    = 30 * time.Minute
-	cursorConsumedIndexTTL  = 15 * time.Minute
-	cursorCheckpointTTL     = 30 * time.Minute
-	cursorStreamFlushDelay  = 16 * time.Millisecond
-	cursorStreamMaxBatch    = 512
+	cursorAPIURL           = "https://api2.cursor.sh"
+	cursorRunPath          = "/agent.v1.AgentService/Run"
+	cursorModelsPath       = "/agent.v1.AgentService/GetUsableModels"
+	cursorClientVersion    = "cli-2026.02.13-41ac335"
+	cursorAuthType         = "cursor"
+	cursorSessionTTL       = 5 * time.Minute
+	cursorSessionHardTTL   = 30 * time.Minute
+	cursorConsumedIndexTTL = 15 * time.Minute
+	cursorCheckpointTTL    = 30 * time.Minute
+	cursorStreamFlushDelay = 16 * time.Millisecond
+	cursorStreamMaxBatch   = 512
 	// cursorToolBatchIdle is how long the frame processor keeps draining after
 	// the most recent MCP tool call before declaring the parallel tool-call
 	// burst complete. Wire captures show Cursor emits every parallel exec of a
@@ -58,23 +56,63 @@ const (
 	cursorToolBatchIdle = 400 * time.Millisecond
 )
 
-// cursorNoProgressTimeout bounds how long the frame processor tolerates an
-// upstream that sends no content-bearing message (heartbeats do not count).
-// Wire observation 2026-08-13: under account-level load Cursor sometimes parks
-// a stream forever, emitting only ~10s keepalives (or going fully silent
-// mid-generation), which would otherwise hang agent clients indefinitely.
-// 240s stays clear of legitimate slow turns — even 1.5MB payloads produce
-// their first frame within seconds — while failing fast enough that clients
-// (Claude Code times out at ~300s) can retry. Variable so tests can shorten
-// it; CURSOR_NO_PROGRESS_TIMEOUT_S overrides it at startup.
-var cursorNoProgressTimeout = func() time.Duration {
-	if s := os.Getenv("CURSOR_NO_PROGRESS_TIMEOUT_S"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			return time.Duration(n) * time.Second
-		}
+// ClientHeartbeat interval written on the H2 stream. These are LOCAL
+// keepalives and must not reset transport idle. Variable so tests can shorten it.
+var cursorHeartbeatInterval = 5 * time.Second
+
+// cursorTransportIdleTimeout aborts when no inbound upstream bytes arrive
+// (including Cursor ServerMsgHeartbeat). CURSOR_TRANSPORT_IDLE_TIMEOUT_S and
+// the legacy CURSOR_NO_PROGRESS_TIMEOUT_S override it. 0 disables the abort.
+var cursorTransportIdleTimeout = func() time.Duration {
+	if d, ok := durationSecondsEnv("CURSOR_TRANSPORT_IDLE_TIMEOUT_S", "CURSOR_NO_PROGRESS_TIMEOUT_S"); ok {
+		return d
 	}
 	return 240 * time.Second
 }()
+
+// cursorSemanticIdleWarning logs cursor_semantic_idle when thinking/text/tool
+// have been silent this long. Upstream heartbeats do not reset it, and it
+// never aborts the stream. 0 disables the warning.
+var cursorSemanticIdleWarning = func() time.Duration {
+	if d, ok := durationSecondsEnv("CURSOR_SEMANTIC_IDLE_WARNING_S"); ok {
+		return d
+	}
+	return 240 * time.Second
+}()
+
+// cursorMaxStreamDuration is the hard cap on one H2 execution (paused while
+// parked for client tool results). 0 disables it.
+var cursorMaxStreamDuration = func() time.Duration {
+	if d, ok := durationSecondsEnv("CURSOR_MAX_STREAM_DURATION_S"); ok {
+		return d
+	}
+	return cursorSessionHardTTL
+}()
+
+func cursorServerMsgName(t cursorproto.ServerMessageType) string {
+	switch t {
+	case cursorproto.ServerMsgUnknown:
+		return "unknown"
+	case cursorproto.ServerMsgTextDelta:
+		return "text_delta"
+	case cursorproto.ServerMsgThinkingDelta:
+		return "thinking_delta"
+	case cursorproto.ServerMsgThinkingCompleted:
+		return "thinking_completed"
+	case cursorproto.ServerMsgTokenDelta:
+		return "token_delta"
+	case cursorproto.ServerMsgCheckpoint:
+		return "checkpoint"
+	case cursorproto.ServerMsgHeartbeat:
+		return "heartbeat"
+	case cursorproto.ServerMsgTurnEnded:
+		return "turn_ended"
+	case cursorproto.ServerMsgExecMcpArgs:
+		return "mcp_args"
+	default:
+		return fmt.Sprintf("type_%d", t)
+	}
+}
 
 // CursorExecutor handles requests to the Cursor API via Connect+Protobuf protocol.
 type CursorExecutor struct {
@@ -142,6 +180,10 @@ type cursorSession struct {
 	updatedAt          time.Time
 	state              generationState
 	expiryWarned       bool
+	// finished is set when the H2 worker for this generation has returned.
+	// Duplicate tool-result retries 409 only while the continuation is still
+	// live; after a stall/close they must start a new stream instead.
+	finished bool
 }
 
 type pendingMcpExec struct {
@@ -163,6 +205,9 @@ func NewCursorExecutor(cfg *config.Config) *CursorExecutor {
 			return openCursorH2Stream(accessToken)
 		},
 		processFrames: processH2SessionFrames,
+	}
+	if cfg != nil {
+		applyCursorStreamTimeouts(cfg.Cursor)
 	}
 	go e.cleanupLoop()
 	return e
@@ -320,13 +365,15 @@ func (e *CursorExecutor) saveCheckpoint(conversationID string, owner *cursorStat
 // cursorStatusErr implements the StatusError and RetryAfter interfaces so the
 // conductor can classify Cursor errors (e.g. 429 → quota cooldown).
 type cursorStatusErr struct {
-	code int
-	msg  string
+	code          int
+	msg           string
+	requestScoped bool
 }
 
 func (e cursorStatusErr) Error() string              { return e.msg }
 func (e cursorStatusErr) StatusCode() int            { return e.code }
 func (e cursorStatusErr) RetryAfter() *time.Duration { return nil } // no retry-after info from Cursor; conductor uses exponential backoff
+func (e cursorStatusErr) IsRequestScoped() bool      { return e.requestScoped }
 
 // classifyCursorError maps Cursor Connect/H2 errors to HTTP status codes.
 // Layer 1: precise match on ConnectError.Code (gRPC standard codes).
@@ -550,6 +597,7 @@ func (e *CursorExecutor) executeOnce(ctx context.Context, auth *cliproxyauth.Aut
 
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
+	sessionCtx = withCursorLiveness(sessionCtx, newCursorLivenessStats())
 	go cursorH2Heartbeat(sessionCtx, stream)
 
 	var fullText strings.Builder
@@ -744,27 +792,32 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 	// generation via (sessionKey, toolCallID). A later generation must not
 	// steal an earlier pending batch.
 	if len(parsed.ToolResults) > 0 && !coldToolContinuation {
-		incoming := incomingToolCallIDs(parsed.ToolResults)
-		session, errResolve := e.resolveGenerationForToolResults(sessionKey, incoming)
-		if errResolve != nil {
-			return nil, errResolve
+		incoming := incomingToolCallIDs(lastTurnToolResults(parsed))
+		if len(incoming) == 0 && parsed.UserText == "" {
+			incoming = incomingToolCallIDs(parsed.ToolResults)
 		}
-		if session != nil {
-			e.noteGenerationRestore(session)
-			logCursorSessionRestore(sessionKey, logging.GetRequestID(ctx), snapshotCursorSession(session))
-			if session.stream != nil && session.authID == authID {
-				log.Debugf("cursor: resuming generation %s for %d tool results", session.generationID, len(parsed.ToolResults))
-				result, errResume := e.resumeWithToolResults(ctx, sessionKey, session, parsed, from, to, req, originalPayload, payload, needsTranslate)
-				if errResume == nil {
-					reporter.EnsurePublished(ctx)
+		if len(incoming) > 0 {
+			session, errResolve := e.resolveGenerationForToolResults(sessionKey, incoming)
+			if errResolve != nil {
+				return nil, errResolve
+			}
+			if session != nil {
+				e.noteGenerationRestore(session)
+				logCursorSessionRestore(sessionKey, logging.GetRequestID(ctx), snapshotCursorSession(session))
+				if session.stream != nil && session.authID == authID {
+					log.Debugf("cursor: resuming generation %s for %d tool results", session.generationID, len(parsed.ToolResults))
+					result, errResume := e.resumeWithToolResults(ctx, sessionKey, session, parsed, from, to, req, originalPayload, payload, needsTranslate)
+					if errResume == nil {
+						reporter.EnsurePublished(ctx)
+					}
+					return result, errResume
 				}
-				return result, errResume
+				if session.authID != authID {
+					log.Warnf("cursor: generation %s belongs to auth %s, but request is from %s — skipping resume", session.generationID, session.authID, authID)
+				}
+			} else if otherKey := e.findConversationKeyByIDLockedSafe(conversationId); otherKey != "" && otherKey != sessionKey {
+				log.Infof("cursor: other-auth conversation %s still has parked generations for conv=%s; leaving them in place", otherKey, conversationId)
 			}
-			if session.authID != authID {
-				log.Warnf("cursor: generation %s belongs to auth %s, but request is from %s — skipping resume", session.generationID, session.authID, authID)
-			}
-		} else if otherKey := e.findConversationKeyByIDLockedSafe(conversationId); otherKey != "" && otherKey != sessionKey {
-			log.Infof("cursor: other-auth conversation %s still has parked generations for conv=%s; leaving them in place", otherKey, conversationId)
 		}
 	}
 
@@ -837,6 +890,8 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		sessionParent = ctx
 	}
 	sessionCtx, sessionCancel := context.WithCancel(sessionParent)
+	liveness := newCursorLivenessStats()
+	sessionCtx = withCursorLiveness(sessionCtx, liveness)
 	if !e.attachConversationStream(conversationId, streamOwner, sessionCancel, stream) {
 		sessionCancel()
 		stream.Close()
@@ -928,6 +983,7 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 
 	origEmitToOut := emitToOut
 	emitToOut = func(chunk cliproxyexecutor.StreamChunk) bool {
+		liveness.noteDownstreamWrite()
 		if !origEmitToOut(chunk) {
 			return false
 		}
@@ -942,6 +998,7 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 	workerOwnsState = true
 	go func() {
 		defer e.releaseConversationStream(conversationId, streamOwner)
+		defer e.markStreamGenerationsFinished(conversationId, stream)
 		var resumeOutCh chan cliproxyexecutor.StreamChunk
 		_ = resumeOutCh
 		thinkingActive := false
@@ -1075,6 +1132,9 @@ func (e *CursorExecutor) executeStreamOnce(ctx context.Context, auth *cliproxyau
 		// processH2SessionFrames returned — stream is done.
 		// Check if error happened before any chunks were emitted.
 		if streamErr != nil {
+			// Mark finished before the client sees the error so a retry of
+			// already-consumed tool results starts a new stream instead of 409.
+			e.markStreamGenerationsFinished(conversationId, stream)
 			if outputStarted.Load() {
 				// Partial output must never be presented as a successful stop.
 				log.Warnf("cursor: stream error after data sent (auth=%s conv=%s): %v", authID, conversationId, streamErr)
@@ -1181,6 +1241,7 @@ func (e *CursorExecutor) resumeWithToolResults(
 	log.Debugf("cursor: resumeWithToolResults: injecting %d tool results via channel", len(parsed.ToolResults))
 
 	closeSession := func() {
+		e.markStreamGenerationsFinished(session.conversationID, session.stream)
 		if session.cancel != nil {
 			session.cancel()
 		}
@@ -1271,6 +1332,7 @@ func openCursorH2Stream(accessToken string) (*cursorproto.H2Stream, error) {
 func cursorH2Heartbeat(ctx context.Context, stream cursorStream) {
 	ticker := time.NewTicker(cursorHeartbeatInterval)
 	defer ticker.Stop()
+	stats := cursorLivenessFrom(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1281,6 +1343,7 @@ func cursorH2Heartbeat(ctx context.Context, stream cursorStream) {
 			if err := stream.Write(frame); err != nil {
 				return
 			}
+			stats.noteLocalKeepalive()
 		}
 	}
 }
@@ -1486,21 +1549,96 @@ func processH2SessionFrames(
 	rejectReason := "Tool not available in this environment. Use the MCP tools provided instead."
 	log.Debugf("cursor: processH2SessionFrames started for streamID=%s, waiting for data...", stream.ID())
 
-	// Stall watchdog: fires when the upstream produces no content-bearing
-	// message for cursorNoProgressTimeout. Heartbeats deliberately do not feed
-	// it — a stalled stream keeps emitting keepalives forever. It is paused
-	// while the session is parked waiting for the client's tool results (that
-	// silence is legitimate and unbounded) and re-armed once results are sent.
-	progressTimer := time.NewTimer(cursorNoProgressTimeout)
-	defer progressTimer.Stop()
-	resetProgressTimer := func() {
-		if !progressTimer.Stop() {
-			select {
-			case <-progressTimer.C:
-			default:
-			}
+	stats := cursorLivenessFrom(ctx)
+	if stats == nil {
+		stats = newCursorLivenessStats()
+	}
+	startedAt := time.Now()
+	var (
+		lastProgressType cursorproto.ServerMessageType
+		decodeErrCount   int
+	)
+
+	var transportTimer *time.Timer
+	var transportC <-chan time.Time
+	if cursorTransportIdleTimeout > 0 {
+		transportTimer = time.NewTimer(cursorTransportIdleTimeout)
+		defer transportTimer.Stop()
+		transportC = transportTimer.C
+	}
+	resetTransport := func() {
+		if transportTimer == nil {
+			return
 		}
-		progressTimer.Reset(cursorNoProgressTimeout)
+		stopTimer(transportTimer)
+		transportTimer.Reset(cursorTransportIdleTimeout)
+	}
+
+	var semanticTimer *time.Timer
+	var semanticC <-chan time.Time
+	semanticWarned := false
+	if cursorSemanticIdleWarning > 0 {
+		semanticTimer = time.NewTimer(cursorSemanticIdleWarning)
+		defer semanticTimer.Stop()
+		semanticC = semanticTimer.C
+	}
+	resetSemantic := func() {
+		semanticWarned = false
+		if semanticTimer == nil {
+			return
+		}
+		stopTimer(semanticTimer)
+		semanticTimer.Reset(cursorSemanticIdleWarning)
+		semanticC = semanticTimer.C
+	}
+
+	var maxTimer *time.Timer
+	var maxC <-chan time.Time
+	maxDeadline := time.Time{}
+	if cursorMaxStreamDuration > 0 {
+		maxTimer = time.NewTimer(cursorMaxStreamDuration)
+		defer maxTimer.Stop()
+		maxC = maxTimer.C
+		maxDeadline = startedAt.Add(cursorMaxStreamDuration)
+	}
+
+	pauseExecutionClocks := func() {
+		stopTimer(transportTimer)
+		stopTimer(semanticTimer)
+		if maxTimer != nil {
+			stopTimer(maxTimer)
+		}
+	}
+	resumeExecutionClocks := func() {
+		resetTransport()
+		resetSemantic()
+		if maxTimer != nil && cursorMaxStreamDuration > 0 {
+			left := time.Until(maxDeadline)
+			if left < 0 {
+				left = 0
+			}
+			maxTimer.Reset(left)
+		}
+	}
+
+	observeDecoded := func(msg *cursorproto.DecodedServerMessage) {
+		if msg == nil {
+			return
+		}
+		lastProgressType = msg.Type
+		switch msg.Type {
+		case cursorproto.ServerMsgHeartbeat:
+			stats.noteUpstreamHeartbeat()
+		case cursorproto.ServerMsgThinkingDelta:
+			stats.noteSemanticThinking()
+			resetSemantic()
+		case cursorproto.ServerMsgTextDelta:
+			stats.noteSemanticText()
+			resetSemantic()
+		case cursorproto.ServerMsgExecMcpArgs:
+			stats.noteSemanticTool()
+			resetSemantic()
+		}
 	}
 
 	// A single assistant turn may contain multiple parallel MCP tool calls.
@@ -1557,6 +1695,7 @@ func processH2SessionFrames(
 		}
 
 		log.Debugf("cursor: waiting for %d tool result(s) on channel (inline mode)...", len(batch))
+		pauseExecutionClocks()
 		needed := make(map[string]struct{}, len(batch))
 		for _, pending := range batch {
 			if pending.ToolCallId != "" {
@@ -1586,6 +1725,7 @@ func processH2SessionFrames(
 				if !ok {
 					return false, stream.Err()
 				}
+				stats.noteUpstreamFrame()
 				buf.Write(waitData)
 				for {
 					cb := buf.Bytes()
@@ -1604,6 +1744,7 @@ func processH2SessionFrames(
 					if werr != nil {
 						continue
 					}
+					observeDecoded(wmsg)
 					switch wmsg.Type {
 					case cursorproto.ServerMsgKvGetBlob:
 						blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
@@ -1626,6 +1767,7 @@ func processH2SessionFrames(
 			}
 		}
 
+		resumeExecutionClocks()
 		// Send an MCP result for every pending call in the batch. Results are
 		// matched to their originating call by tool_call_id.
 		for _, pending := range batch {
@@ -1656,10 +1798,36 @@ func processH2SessionFrames(
 			}
 			// The parked tool-result wait inside finalizeToolBatch is unbounded
 			// by design; give the model a fresh window now that results are in.
-			resetProgressTimer()
-		case <-progressTimer.C:
-			log.Warnf("cursor: processH2SessionFrames[%s]: no upstream progress within %s (heartbeats only) — failing stalled stream", stream.ID(), cursorNoProgressTimeout)
-			return cursorStatusErr{code: 504, msg: fmt.Sprintf("cursor: upstream stalled: no progress within %s", cursorNoProgressTimeout)}
+			resumeExecutionClocks()
+		case <-transportC:
+			reason := cursorReasonFirstByteTimeout
+			if stats.hadUpstreamFrame() {
+				reason = cursorReasonTransportIdle
+			}
+			fields := stats.logFields(stream.ID())
+			fields["event"] = cursorReasonStreamStalled
+			fields["reason"] = reason
+			fields["last_progress_type"] = cursorServerMsgName(lastProgressType)
+			fields["decode_errs"] = decodeErrCount
+			log.WithFields(fields).Warn("cursor stream stalled: no upstream frames")
+			return cursorWatchdogErr(reason, cursorTransportIdleTimeout)
+		case <-semanticC:
+			if !semanticWarned {
+				fields := stats.logFields(stream.ID())
+				fields["event"] = "cursor_semantic_idle"
+				fields["last_progress_type"] = cursorServerMsgName(lastProgressType)
+				log.WithFields(fields).Warn("cursor_semantic_idle")
+				if cursorSemanticIdleHook != nil {
+					cursorSemanticIdleHook(stats)
+				}
+				semanticWarned = true
+			}
+			semanticC = nil
+		case <-maxC:
+			fields := stats.logFields(stream.ID())
+			fields["event"] = cursorReasonMaxDuration
+			log.WithFields(fields).Warn("cursor max stream duration exceeded")
+			return cursorMaxDurationErr(cursorMaxStreamDuration)
 		case data, ok := <-stream.Data():
 			if !ok {
 				log.Debugf("cursor: processH2SessionFrames[%s]: exiting: stream data channel closed", stream.ID())
@@ -1675,6 +1843,8 @@ func processH2SessionFrames(
 			// Log first 20 bytes of raw data for debugging
 			previewLen := min(20, len(data))
 			log.Debugf("cursor: processH2SessionFrames[%s]: received %d bytes from dataCh, first bytes: %x (%q)", stream.ID(), len(data), data[:previewLen], string(data[:previewLen]))
+			stats.noteUpstreamFrame()
+			resetTransport()
 			buf.Write(data)
 			log.Debugf("cursor: processH2SessionFrames[%s]: buf total=%d", stream.ID(), buf.Len())
 
@@ -1704,14 +1874,13 @@ func processH2SessionFrames(
 
 				msg, err := cursorproto.DecodeAgentServerMessage(payload)
 				if err != nil {
+					decodeErrCount++
 					log.Debugf("cursor: failed to decode server message: %v", err)
 					continue
 				}
 
 				log.Debugf("cursor: decoded server message type=%d", msg.Type)
-				if msg.Type != cursorproto.ServerMsgHeartbeat {
-					resetProgressTimer()
-				}
+				observeDecoded(msg)
 				switch msg.Type {
 				case cursorproto.ServerMsgTextDelta:
 					if msg.Text != "" && onText != nil {
@@ -1921,6 +2090,46 @@ func parseOpenAIRequest(payload []byte) *parsedOpenAIRequest {
 	}
 
 	return p
+}
+
+// lastTurnToolResults returns tool results after the last assistant message.
+// Claude / OpenAI clients resend historical tool_results; only the current
+// user turn should bind a parked generation.
+func lastTurnToolResults(parsed *parsedOpenAIRequest) []toolResultInfo {
+	if parsed == nil {
+		return nil
+	}
+	lastAssistant := -1
+	for i, msg := range parsed.Messages {
+		if msg.Get("role").String() == "assistant" {
+			lastAssistant = i
+		}
+	}
+	if lastAssistant < 0 || lastAssistant+1 >= len(parsed.Messages) {
+		return nil
+	}
+	var out []toolResultInfo
+loop:
+	for _, msg := range parsed.Messages[lastAssistant+1:] {
+		switch msg.Get("role").String() {
+		case "tool":
+			id := msg.Get("tool_call_id").String()
+			if id == "" {
+				continue
+			}
+			out = append(out, toolResultInfo{
+				ToolCallId: id,
+				Content:    extractTextContent(msg.Get("content")),
+			})
+		case "user":
+			if strings.TrimSpace(extractTextContent(msg.Get("content"))) != "" {
+				break loop
+			}
+		default:
+			break loop
+		}
+	}
+	return out
 }
 
 // parseToolChoice normalizes the OpenAI tool_choice field. It accepts the
